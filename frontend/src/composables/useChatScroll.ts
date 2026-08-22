@@ -1,12 +1,12 @@
 import { ref, type Ref } from 'vue'
 
 /**
- * 聊天滚动控制：自动贴底 + 用户上滚暂停跟随 + 上下分页滚动。
+ * 聊天滚动控制：自动贴底 + 用户上滚暂停跟随 + 直达顶部/底部。
  *
  * 流式场景约束（设计文档 §6.3）：token 持续追加时，若用户正在上翻历史，
  * 不应强行拉回底部；仅当用户位于底部（或未滚动）时才自动跟随。
  *
- * 右侧上下按钮：以视口高度 80% 为步长平滑滚动，兼容亮/暗色（样式由调用方控制）。
+ * 右侧上下按钮：点击直接滚动到顶部 / 底部（平滑动画），兼容亮/暗色（样式由调用方控制）。
  *
  * @param scroller 可滚动容器元素（v-for 消息列表的父级）
  */
@@ -58,24 +58,23 @@ export function useChatScroll(scroller: Ref<HTMLElement | null>) {
     }
   }
 
-  /** 向上滚动一页（视口 80% 高度），平滑动画 */
-  function scrollUp(smooth = true) {
+  /** 滚动到顶部（平滑动画） */
+  function scrollToTop(smooth = true) {
     const el = scroller.value
     if (!el) {
       return
     }
-    const delta = Math.floor(el.clientHeight * 0.8) || 320
-    el.scrollBy({ top: -delta, behavior: smooth ? 'smooth' : 'auto' })
+    el.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'auto' })
   }
 
-  /** 向下滚动一页（视口 80% 高度），平滑动画 */
+  /** 向上按钮：直接滚动到顶部 */
+  function scrollUp(smooth = true) {
+    scrollToTop(smooth)
+  }
+
+  /** 向下按钮：直接滚动到底部 */
   function scrollDown(smooth = true) {
-    const el = scroller.value
-    if (!el) {
-      return
-    }
-    const delta = Math.floor(el.clientHeight * 0.8) || 320
-    el.scrollBy({ top: delta, behavior: smooth ? 'smooth' : 'auto' })
+    scrollToBottom(smooth)
   }
 
   return {
@@ -83,6 +82,7 @@ export function useChatScroll(scroller: Ref<HTMLElement | null>) {
     atBottom,
     showBackToBottom,
     onScroll,
+    scrollToTop,
     scrollToBottom,
     snapToBottom,
     followIfAtBottom,
