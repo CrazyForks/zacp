@@ -304,7 +304,7 @@ export default {
   },
   hosts: {
     listTitle: 'Host list',
-    localName: 'Local host',
+    localName: 'localhost',
     addAction: 'Add host',
     addTitle: 'Add host',
     nameRequired: 'Display name is required',

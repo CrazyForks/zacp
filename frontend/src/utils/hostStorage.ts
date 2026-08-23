@@ -38,7 +38,7 @@ const HOSTS_KEY = 'zacp.hosts.list'
 const CURRENT_HOST_KEY = 'zacp.hosts.current'
 
 /** 主机显示名称最大长度（字符数；列表/弹窗等展示场景的上限，防超长撑爆布局） */
-export const HOST_NAME_MAX = 30
+export const HOST_NAME_MAX = 10
 
 /** 配置的部署后端地址（VITE_API_BASE_URL，可能为空 = 同源部署） */
 const CONFIGURED_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? ''

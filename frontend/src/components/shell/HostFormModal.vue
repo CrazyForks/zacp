@@ -255,12 +255,14 @@ function backToForm() {
     <form v-if="phase === 'form'" class="flex flex-col gap-4" @submit.prevent="handleSubmit">
       <n-input
         v-model:value="name"
+        clearable
         :placeholder="t('hosts.namePlaceholder')"
         :maxlength="HOST_NAME_MAX"
         size="large"
       />
       <n-input
         v-model:value="url"
+        clearable
         :placeholder="t('hosts.urlPlaceholder')"
         size="large"
         @keydown.enter.prevent="handleSubmit"
