@@ -13,7 +13,6 @@ declare module 'vue' {
   export interface GlobalComponents {
     AboutSettings: typeof import('./components/shell/AboutSettings.vue')['default']
     AddAgentModal: typeof import('./components/shell/AddAgentModal.vue')['default']
-    AddHostModal: typeof import('./components/shell/AddHostModal.vue')['default']
     AgentConfigEditorModal: typeof import('./components/shell/AgentConfigEditorModal.vue')['default']
     AgentSettings: typeof import('./components/shell/AgentSettings.vue')['default']
     AppSidebar: typeof import('./components/shell/AppSidebar.vue')['default']
@@ -26,6 +25,7 @@ declare module 'vue' {
     FilePanel: typeof import('./components/files/FilePanel.vue')['default']
     GitPanel: typeof import('./components/files/GitPanel.vue')['default']
     HeaderIconButton: typeof import('./components/chat/HeaderIconButton.vue')['default']
+    HostFormModal: typeof import('./components/shell/HostFormModal.vue')['default']
     HostMenu: typeof import('./components/shell/HostMenu.vue')['default']
     LocaleSwitch: typeof import('./components/LocaleSwitch.vue')['default']
     MessageItem: typeof import('./components/chat/MessageItem.vue')['default']

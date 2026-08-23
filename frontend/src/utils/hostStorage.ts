@@ -40,27 +40,21 @@ const CURRENT_HOST_KEY = 'zacp.hosts.current'
 /** 配置的部署后端地址（VITE_API_BASE_URL，可能为空 = 同源部署） */
 const CONFIGURED_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? ''
 
-/** 去掉首尾空白与尾部 `/`；空串保持为空 */
-function trimUrl(raw: string): string {
-  return raw.trim().replace(/\/+$/, '')
-}
-
 /**
- * 规范化主机地址：
- * - 无协议时自动补 `http://`（最常输入的 `192.168.1.10:8680` 形式）；
- * - 去尾部斜杠；非法地址（空串）返回空。
+ * 规范化主机地址（添加/编辑主机时校验）：
+ * - 去掉首尾空白；
+ * - 必须 http:// 或 https:// 开头（不做自动补协议，防手误）；
+ * - 只保留 origin（协议 + host[:port]），自动去掉末尾 `/` 与路径/查询/哈希；
+ * - 非法（空、无协议、URL 解析失败）返回空串，由调用方提示。
  */
 export function normalizeHostUrl(raw: string): string {
-  let url = trimUrl(raw)
-  if (!url) {
+  const url = raw.trim()
+  if (!url || !/^https?:\/\//i.test(url)) {
     return ''
   }
-  if (!/^https?:\/\//i.test(url)) {
-    url = `http://${url}`
-  }
   try {
-    // 用 URL 构造器兜底校验（非法 host / 端口等会抛错）
-    return trimUrl(new URL(url).href)
+    // URL.origin 只含协议+host+port，天然满足「去掉路径」；默认端口（80/443）会自动省略
+    return new URL(url).origin
   } catch {
     return ''
   }
@@ -154,6 +148,11 @@ export function findHost(url: string): HostConfig | undefined {
   return readHosts().find((h) => h.url === url)
 }
 
+/** 按 id 查找主机（编辑/删除等以 id 为稳定标识的操作）；不存在返回 undefined */
+export function findHostById(id: string): HostConfig | undefined {
+  return readHosts().find((h) => h.id === id)
+}
+
 /** 更新某台主机的部分字段并持久化；主机不存在时静默忽略 */
 export function updateHost(url: string, patch: Partial<HostConfig>): void {
   const list = readHosts()
@@ -174,6 +173,58 @@ export function updateHost(url: string, patch: Partial<HostConfig>): void {
 /** 读取某主机的登录 token；不存在返回空串 */
 export function readHostToken(url: string): string {
   return findHost(url)?.token ?? ''
+}
+
+/**
+ * 按 id 更新主机字段（编辑主机信息 / 清除凭证等）。
+ *
+ * - patch.url 变更时：与其它主机（含本地主机）去重，冲突抛 `hosts.duplicate`；
+ *   若该主机正是当前主机，同步 localStorage 的 current 键（调用方随后整页刷新）；
+ * - token/authEnabled 等字段显式传 undefined 会从记录中移除（与 updateHost 同语义）。
+ * 主机不存在时静默忽略。
+ */
+export function updateHostById(id: string, patch: Partial<HostConfig>): void {
+  const list = readHosts()
+  const idx = list.findIndex((h) => h.id === id)
+  if (idx < 0) {
+    return
+  }
+  const next = { ...list[idx], ...patch }
+  if (patch.url && patch.url !== list[idx].url) {
+    // 地址是主机唯一标识：新地址被其它记录占用（含本地主机）则拒绝保存
+    if (list.some((h) => h.id !== id && h.url === patch.url)) {
+      throw new Error('hosts.duplicate')
+    }
+    // 当前主机改地址：current 键一并迁移，否则刷新后回退错误
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(CURRENT_HOST_KEY) === list[idx].url) {
+      localStorage.setItem(CURRENT_HOST_KEY, patch.url)
+    }
+  }
+  // 兼容：patch 显式置 undefined 的字段也应移除（如 token 清除）
+  for (const key of Object.keys(patch) as (keyof HostConfig)[]) {
+    if (next[key] === undefined) {
+      delete next[key]
+    }
+  }
+  list[idx] = next
+  writeHosts(list)
+}
+
+/**
+ * 按 id 删除主机（纯本地操作，凭证随记录一并清除）。
+ * 返回被删除的主机；不存在返回 undefined。
+ * 注意：调用方需处理「删除的是当前主机」——current 键指向的记录已消失，
+ * 读取时会自动回退本地主机（见 currentHostUrl），但显式切回并刷新更明确。
+ */
+export function removeHostById(id: string): HostConfig | undefined {
+  const list = readHosts()
+  const idx = list.findIndex((h) => h.id === id)
+  if (idx < 0) {
+    return undefined
+  }
+  const [removed] = list.splice(idx, 1)
+  writeHosts(list)
+  return removed
 }
 
 /** 写入某主机的登录 token 与过期时间（登录/刷新成功时调用） */

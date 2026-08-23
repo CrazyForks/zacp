@@ -1,31 +1,40 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
 import {
   AddOutline,
-  CheckmarkOutline,
   ChevronDownOutline,
+  CreateOutline,
   ServerOutline,
+  TrashOutline,
 } from '@vicons/ionicons5'
-import AddHostModal from '@/components/shell/AddHostModal.vue'
+import HostFormModal from '@/components/shell/HostFormModal.vue'
 import { useHostsStore } from '@/stores/hosts'
 import { isHostStoreError } from '@/utils/hostError'
+import type { HostConfig } from '@/utils/hostStorage'
 
 /**
- * 侧栏底部「主机选项」：展示当前主机名，点击弹出主机列表（切换）/ 添加主机入口。
+ * 侧栏底部「主机选项」：展示当前主机名，点击弹出主机列表。
  *
- * 切换流程在 hosts store（探测 → 刷新续期/重认证 → 整页刷新回首页）；
- * 本组件只负责触发与错误提示。切换成功会整页刷新，popover 状态自然销毁。
+ * 行内操作：
+ * - 行主体点击 = 切换主机（hosts store：探测 → 刷新续期/重认证 → 整页刷新回首页）；
+ * - ✎ 编辑（非本地主机）= 打开编辑弹窗（改名/改地址，改地址需探活+清凭证）；
+ * - 🗑 删除（非本地主机）= 确认后删除，删除当前主机自动切回本地主机；
+ * - 本地主机（内置兜底）编辑/删除按钮置灰禁用。
  */
 const { t } = useI18n()
 const message = useMessage()
+const dialog = useDialog()
 const hostsStore = useHostsStore()
 
 /** 当前主机（切换/改名后自动跟随 store） */
 const current = computed(() => hostsStore.current)
 
+/** 添加弹窗（HostFormModal add 模式）与编辑弹窗（edit 模式）开关 */
 const addHostOpen = ref(false)
+const editHostOpen = ref(false)
+const editTarget = ref<HostConfig | null>(null)
 
 async function onPick(url: string) {
   try {
@@ -43,11 +52,48 @@ async function onPick(url: string) {
 function openAddHost() {
   addHostOpen.value = true
 }
+
+/** 打开编辑弹窗（仅非本地主机可达，按钮已禁用兜底） */
+function openEditHost(h: HostConfig) {
+  if (h.builtin) {
+    return
+  }
+  editTarget.value = h
+  editHostOpen.value = true
+}
+
+/** 删除确认（dialog.warning，避免 popover 内嵌 popconfirm 的层级问题） */
+function confirmDeleteHost(h: HostConfig) {
+  if (h.builtin) {
+    return
+  }
+  const isCurrent = h.url === hostsStore.currentUrl
+  dialog.warning({
+    title: t('hosts.deleteTitle'),
+    content: isCurrent
+      ? t('hosts.deleteCurrentConfirm', { name: h.name })
+      : t('hosts.deleteConfirm', { name: h.name }),
+    positiveText: t('common.delete'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      try {
+        const needRefresh = hostsStore.removeHost(h.id)
+        message.success(t('hosts.deleteSuccess'))
+        if (needRefresh) {
+          // 删除的是当前主机：store 已把 current 回退本地主机，整页刷新重建
+          window.location.assign('/')
+        }
+      } catch (e) {
+        message.error(isHostStoreError(e) ? t(e.message) : t('hosts.deleteFailed'))
+      }
+    },
+  })
+}
 </script>
 
 <template>
   <div class="min-w-0 flex-1">
-    <n-popover trigger="click" placement="top-start" :show-arrow="false" :width="280">
+    <n-popover trigger="click" placement="top-start" :show-arrow="false" :width="300">
       <template #trigger>
         <!-- 主机选项按钮：当前主机名（超长省略），点击弹出主机列表 -->
         <button
@@ -63,31 +109,73 @@ function openAddHost() {
         </button>
       </template>
 
-      <!-- 主机列表：点击切换（当前主机显示勾选）；底部「添加主机」 -->
+      <!-- 主机列表：行主体点击切换；选中行主色高亮背景；右侧编辑/删除（本地主机禁用） -->
       <div class="flex flex-col">
         <div class="px-3 pb-1 pt-2 text-xs font-medium text-ink-muted">
           {{ t('hosts.listTitle') }}
         </div>
-        <button
+        <div
           v-for="h in hostsStore.hosts"
-          :key="h.url"
-          type="button"
-          class="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-hover"
-          @click="onPick(h.url)"
+          :key="h.id"
+          class="flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors"
+          :class="
+            h.url === hostsStore.currentUrl
+              ? 'bg-primary/10 hover:bg-primary/15'
+              : 'hover:bg-surface-hover'
+          "
         >
-          <span class="min-w-0 flex-1">
+          <!-- 行主体：切换主机（独立 button，避免与操作按钮嵌套）。
+               选中行 hover 保持主色加深而非变灰（hover:bg-primary/15），避免用户误以为失去选中态 -->
+          <button
+            type="button"
+            class="min-w-0 flex-1 cursor-pointer py-0.5 text-left focus:outline-none"
+            :title="t('hosts.switchAction')"
+            @click="onPick(h.url)"
+          >
             <span class="block truncate text-sm text-ink">
               {{ h.name }}
             </span>
             <span class="block truncate text-xs text-ink-muted">{{ h.url }}</span>
+          </button>
+          <!-- 编辑：本地主机置灰禁用（title 说明原因） -->
+          <span
+            :title="h.builtin ? t('hosts.builtinProtected') : undefined"
+            class="inline-flex"
+          >
+            <n-button
+              quaternary
+              circle
+              size="tiny"
+              :disabled="h.builtin"
+              :aria-label="t('hosts.editAction')"
+              @click="openEditHost(h)"
+            >
+              <template #icon>
+                <CreateOutline />
+              </template>
+            </n-button>
           </span>
-          <CheckmarkOutline
-            v-if="h.url === hostsStore.currentUrl"
-            class="h-4 w-4 shrink-0 text-primary"
-          />
-        </button>
-        <!-- 添加主机入口（需求 2） -->
-        <div class="border-t border-divider px-1 py-1">
+          <!-- 删除：本地主机置灰禁用 -->
+          <span
+            :title="h.builtin ? t('hosts.builtinProtected') : undefined"
+            class="inline-flex"
+          >
+            <n-button
+              quaternary
+              circle
+              size="tiny"
+              :disabled="h.builtin"
+              :aria-label="t('hosts.deleteAction')"
+              @click="confirmDeleteHost(h)"
+            >
+              <template #icon>
+                <TrashOutline />
+              </template>
+            </n-button>
+          </span>
+        </div>
+        <!-- 添加主机入口（需求 2）：mt-2 使分割线与上方主机行（尤其选中高亮行）拉开距离，避免高亮背景紧贴分割线 -->
+        <div class="mt-2 border-t border-divider px-1 py-1">
           <button
             type="button"
             class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm text-ink-secondary transition-colors hover:bg-surface-hover"
@@ -100,6 +188,13 @@ function openAddHost() {
       </div>
     </n-popover>
 
-    <AddHostModal :show="addHostOpen" @update:show="addHostOpen = $event" />
+    <!-- 添加 / 编辑弹窗（add/edit 双模式共用表单，见 HostFormModal） -->
+    <HostFormModal :show="addHostOpen" mode="add" @update:show="addHostOpen = $event" />
+    <HostFormModal
+      :show="editHostOpen"
+      mode="edit"
+      :host="editTarget"
+      @update:show="editHostOpen = $event"
+    />
   </div>
 </template>

@@ -1,37 +1,49 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { fetchCaptcha, login } from '@/api'
 import { ApiError } from '@/api/types'
 import { useHostsStore } from '@/stores/hosts'
 import { isHostStoreError } from '@/utils/hostError'
-import { normalizeHostUrl } from '@/utils/hostStorage'
+import { normalizeHostUrl, type HostConfig } from '@/utils/hostStorage'
 
 /**
- * 添加主机弹窗（需求 3）。两阶段：
- * 1. 表单：显示名称（必填）+ 主机地址（必填，自动补 http://）；
- *    提交时校验目标后端可达（GET /auth/status 200 + 合法 JSON = 通过）；
- * 2. 后端启用密码认证 → 二次认证：用户名/密码/图形验证码（登录成功才添加，
- *    用户名与 token 存入该主机记录，下次重认证自动填充用户名）。
+ * 主机表单弹窗（添加 / 编辑共用一套表单与校验逻辑）。
+ *
+ * add 模式（需求 3）：名称+地址 → 校验目标后端可达（GET /auth/status）→
+ * 后端启用密码认证则二次认证（用户名/密码/验证码，凭证存入主机记录），
  * 添加成功后不切换当前主机。
+ *
+ * edit 模式：预填主机当前信息；
+ * - 仅改名 → 直接保存，无副作用；
+ * - 改地址 → 探活新地址（失败不保存）+ 清除该主机旧凭证（下次切换时重新登录），
+ *   若编辑的是当前主机且地址变更 → 保存后整页刷新（current 键已由 store 同步）。
  */
-const props = defineProps<{ show: boolean }>()
+const props = defineProps<{
+  show: boolean
+  mode: 'add' | 'edit'
+  /** edit 模式的目标主机（add 模式忽略） */
+  host?: HostConfig | null
+}>()
 const emit = defineEmits<{ (e: 'update:show', value: boolean): void }>()
 
 const { t } = useI18n()
 const message = useMessage()
 const hostsStore = useHostsStore()
 
-// —— 阶段 1：基本信息 ——
+// —— 基本信息 ——
 const name = ref('')
 const url = ref('')
 const probing = ref(false)
 const formError = ref('')
-/** 当前表单地址的规范化结果（探测与添加共用，避免重复解析） */
+
+/** 名称与地址（去空白后）都填写才允许提交（需求：未填完不能点下一步/保存） */
+const canSubmit = computed(() => name.value.trim() !== '' && url.value.trim() !== '')
+/** 当前表单地址的规范化结果（探测与保存共用，避免重复解析） */
 let normalizedUrl = ''
 
-// —— 阶段 2：二次认证（仅目标主机启用认证时进入） ——
+// —— 二次认证（仅 add 模式、目标主机启用认证时进入） ——
 const phase = ref<'form' | 'auth'>('form')
 const username = ref('')
 const password = ref('')
@@ -42,16 +54,22 @@ const captchaLoading = ref(false)
 const submitting = ref(false)
 const authError = ref('')
 
-/** 弹窗打开时重置全部状态（上次添加的残留不带到下次） */
+/** 弹窗打开时重置状态：add 清空；edit 预填主机当前信息 */
 watch(
   () => props.show,
   (open) => {
     if (!open) {
       return
     }
-    name.value = ''
-    url.value = ''
-    normalizedUrl = ''
+    if (props.mode === 'edit' && props.host) {
+      name.value = props.host.name
+      url.value = props.host.url
+      normalizedUrl = props.host.url
+    } else {
+      name.value = ''
+      url.value = ''
+      normalizedUrl = ''
+    }
     formError.value = ''
     phase.value = 'form'
     username.value = ''
@@ -77,8 +95,8 @@ async function refreshCaptcha() {
   }
 }
 
-/** 阶段 1 提交：校验后端可达性；启用认证则进入二次认证，否则直接添加 */
-async function handleProbe() {
+/** 表单提交（add/edit 共用入口）：校验 → 按模式分流 */
+async function handleSubmit() {
   if (probing.value) {
     return
   }
@@ -100,16 +118,10 @@ async function handleProbe() {
   probing.value = true
   formError.value = ''
   try {
-    const status = await hostsStore.probeHostUrl(normalized)
-    if (status.enabled) {
-      // 后端启用密码认证：二次认证（验证码仅认证启用时强制）
-      phase.value = 'auth'
-      username.value = ''
-      void refreshCaptcha()
+    if (props.mode === 'edit' && props.host) {
+      await handleEditSave(props.host, normalized)
     } else {
-      hostsStore.addHostRecord(name.value, normalized)
-      message.success(t('hosts.addSuccess'))
-      emit('update:show', false)
+      await handleAdd(normalized)
     }
   } catch (e) {
     // store 业务错误（地址重复等）按其 i18n key 显示；网络/解析失败统一提示
@@ -121,7 +133,46 @@ async function handleProbe() {
   }
 }
 
-/** 阶段 2 提交：登录目标主机，成功后把凭证存入主机记录并添加 */
+/** add 模式：探测 → 启用认证则二次认证，否则直接添加（不切换） */
+async function handleAdd(normalized: string) {
+  const status = await hostsStore.probeHostUrl(normalized)
+  if (status.enabled) {
+    // 后端启用密码认证：二次认证（验证码仅认证启用时强制）
+    phase.value = 'auth'
+    username.value = ''
+    void refreshCaptcha()
+  } else {
+    hostsStore.addHostRecord(name.value, normalized)
+    message.success(t('hosts.addSuccess'))
+    emit('update:show', false)
+  }
+}
+
+/** edit 模式：仅改名直接保存；改地址先探活再保存（旧凭证由 store 清除） */
+async function handleEditSave(host: HostConfig, normalized: string) {
+  const urlChanged = host.url !== normalized
+  if (urlChanged) {
+    // 地址是新的：必须探活（GET /auth/status），不可达则不保存
+    await hostsStore.probeHostUrl(normalized)
+  }
+  const needRefresh = hostsStore.updateHostInfo(host.id, {
+    name: name.value,
+    url: normalized,
+  })
+  message.success(t('hosts.editSuccess'))
+  if (needRefresh) {
+    // 当前主机改地址：current 键已同步，整页刷新按新地址重建（与切换主机同体验）
+    window.location.assign('/')
+    return
+  }
+  if (urlChanged) {
+    // 非当前主机改地址：凭证已清除，下次切换时才重新登录，这里补一条可见提示
+    message.info(t('hosts.editAddressChangedHint'))
+  }
+  emit('update:show', false)
+}
+
+/** 阶段 2 提交（add 模式）：登录目标主机，成功后把凭证存入主机记录并添加 */
 async function handleAuthSubmit() {
   if (submitting.value) {
     return
@@ -155,7 +206,7 @@ async function handleAuthSubmit() {
       c || undefined,
       { baseUrl: normalizedUrl },
     )
-    // 认证通过：凭证随主机记录一起持久化（需求：用户名保存供下次自动填充）
+    // 认证通过：凭证随主机记录一起持久化（用户名保存供下次自动填充）
     hostsStore.addHostRecord(name.value, normalizedUrl, res)
     message.success(t('hosts.addSuccess'))
     emit('update:show', false)
@@ -184,7 +235,7 @@ async function handleAuthSubmit() {
   }
 }
 
-/** 认证失败后允许回退修改地址/名称（左上角返回按钮） */
+/** 认证失败后允许回退修改地址/名称（左上角返回按钮，仅 add 模式） */
 function backToForm() {
   phase.value = 'form'
   authError.value = ''
@@ -195,13 +246,13 @@ function backToForm() {
   <n-modal
     :show="props.show"
     preset="card"
-    :title="t('hosts.addTitle')"
+    :title="props.mode === 'add' ? t('hosts.addTitle') : t('hosts.editTitle')"
     :mask-closable="true"
     style="width: 420px"
     @update:show="emit('update:show', $event)"
   >
-    <!-- 阶段 1：名称 + 地址 -->
-    <form v-if="phase === 'form'" class="flex flex-col gap-4" @submit.prevent="handleProbe">
+    <!-- 基本信息：名称 + 地址（add/edit 共用） -->
+    <form v-if="phase === 'form'" class="flex flex-col gap-4" @submit.prevent="handleSubmit">
       <n-input
         v-model:value="name"
         :placeholder="t('hosts.namePlaceholder')"
@@ -211,21 +262,24 @@ function backToForm() {
         v-model:value="url"
         :placeholder="t('hosts.urlPlaceholder')"
         size="large"
-        @keydown.enter.prevent="handleProbe"
+        @keydown.enter.prevent="handleSubmit"
       />
       <p v-if="formError" class="text-sm text-red-500">{{ formError }}</p>
+      <!-- 本地存储说明（添加/编辑共用；多主机数据仅存浏览器，见 utils/hostStorage） -->
+      <p class="text-xs leading-relaxed text-ink-muted">{{ t('hosts.localOnlyHint') }}</p>
       <n-button
         type="primary"
         size="large"
         block
         attr-type="submit"
+        :disabled="!canSubmit"
         :loading="probing"
       >
-        {{ t('common.next') }}
+        {{ props.mode === 'add' ? t('common.next') : t('common.save') }}
       </n-button>
     </form>
 
-    <!-- 阶段 2：二次认证（目标主机启用密码认证） -->
+    <!-- 二次认证（仅 add 模式、目标主机启用密码认证） -->
     <form v-else class="flex flex-col gap-4" @submit.prevent="handleAuthSubmit">
       <div class="flex items-center gap-1 text-xs text-ink-muted">
         <button

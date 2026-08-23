@@ -12,10 +12,14 @@ import {
   type HostConfig,
   currentHostUrl,
   findHost,
+  findHostById,
+  localHostUrl,
   normalizeHostUrl,
   readHosts,
   readHostToken,
+  removeHostById,
   updateHost,
+  updateHostById,
   writeCurrentHostUrl,
   writeHosts,
 } from '@/utils/hostStorage'
@@ -122,6 +126,25 @@ export const useHostsStore = defineStore('hosts', () => {
       authModalOpen.value = false
       req.resolve(result)
     }
+    // 切换场景收尾：requestAuth 只有切换流程会传入非当前主机（401/守卫/WS
+    // 的重认证入口一律传当前主机），故「认证成功且目标 ≠ 当前主机」即代表
+    // 本次登录服务于一次切换。无论切换的 promise 链路是否已被并发事件中止
+    // （弹窗被 401 抢占换目标时 switchHost 会提前收到 null 而放弃），认证成功
+    // 本身 = 用户明确要切过去——这里直接完成切换并整页刷新，杜绝「登录成功
+    // 但页面数据仍是旧主机」。当前主机 401 重认证（targetUrl === currentUrl）
+    // 不进入本分支。
+    //
+    // 用 authRequest 是否为空区分「纯取消」与「认证流程仍在」：authSuccessFor
+    // 仅在用户提交登录（AuthModal.handleSubmit）成功后才会被调用，迟到响应必然
+    // 意味着用户曾完整输入凭证并点击提交——提交登录本身就是确认切换的意图，
+    // 关闭弹窗不撤销已提交的认证。故仅有活动弹窗请求时仍完成切换；authCancel
+    // 后被置 null（纯取消、无任何后续认证请求）则不切换，响应只落库。
+    // 注释留档：曾考虑用 lastCancelledUrl 排除「取消后又开新弹窗」的窄窗口，
+    // 但那会把 401 抢占（切换弹窗被系统重认证顶替）场景一并排除——正是用户
+    // 报告的「登录成功但页面不刷新」根因，故不采用。
+    if (targetUrl !== currentUrl.value && authRequest) {
+      commitSwitch(targetUrl)
+    }
   }
 
   /** 认证取消/关闭（AuthModal 取消或直接关闭；换主机复用路径也会先走到这里） */
@@ -146,7 +169,7 @@ export const useHostsStore = defineStore('hosts', () => {
 
   /**
    * 添加主机记录（需求 3）：不切换当前主机。
-   * 校验与二次认证由 AddHostModal 先完成（probeHostUrl + apiLogin），
+   * 校验与二次认证由 HostFormModal 先完成（probeHostUrl + apiLogin），
    * 这里只做去重 + 组装 + 持久化。auth 缺省 = 该主机未启用认证。
    * 返回新主机；地址重复时抛错。
    */
@@ -180,12 +203,87 @@ export const useHostsStore = defineStore('hosts', () => {
     hosts.value = readHosts()
   }
 
+  /**
+   * 更新主机信息（编辑弹窗保存；仅改名或改名+改地址）。
+   *
+   * - 仅名称变更：直接保存，无副作用；
+   * - 地址变更：调用方（HostFormModal）已探活新地址，这里清 token/authEnabled
+   *   （地址变了 = 可能是另一台后端，旧凭证不可信；username 保留供下次预填），
+   *   去重由 hostStorage.updateHostById 兜底（新地址与其它主机冲突抛 hosts.duplicate）；
+   * - 返回是否需整页刷新：仅「当前主机改地址」为 true（current 键已同步，刷新后
+   *   页面按新地址工作，与切换主机同体验）。
+   */
+  function updateHostInfo(id: string, next: { name: string; url: string }): boolean {
+    const host = findHostById(id)
+    if (!host) {
+      throw new Error('hosts.notFound')
+    }
+    // 与 removeHost 对称：内置本地主机不允许编辑（UI 已禁用，store 层防御兜底）
+    if (host.builtin) {
+      throw new Error('hosts.builtinProtected')
+    }
+    const urlChanged = host.url !== next.url
+    if (urlChanged) {
+      updateHostById(id, {
+        name: next.name,
+        url: next.url,
+        token: undefined,
+        tokenExpiresAt: undefined,
+        authEnabled: undefined,
+      })
+      hosts.value = readHosts()
+      return host.url === currentUrl.value
+    }
+    updateHostById(id, { name: next.name })
+    hosts.value = readHosts()
+    return false
+  }
+
+  /**
+   * 删除主机（纯本地操作，token/用户名随记录清除）。
+   * 内置本地主机拒绝删除（hosts.builtinProtected）。
+   * 删除的是当前主机时：current 显式回退本地主机并返回 true（调用方整页刷新）。
+   */
+  function removeHost(id: string): boolean {
+    const host = findHostById(id)
+    if (!host) {
+      throw new Error('hosts.notFound')
+    }
+    if (host.builtin) {
+      throw new Error('hosts.builtinProtected')
+    }
+    const removed = removeHostById(id)
+    if (!removed) {
+      throw new Error('hosts.notFound')
+    }
+    hosts.value = readHosts()
+    if (removed.url === currentUrl.value) {
+      // 删除的是当前主机：切回内置本地主机兜底（currentHostUrl 读取端也有自动回退）
+      writeCurrentHostUrl(localHostUrl())
+      return true
+    }
+    return false
+  }
+
   /** 进行中的切换目标（in-flight 去重：快速重复点击同一主机时忽略，避免并发刷新竞态） */
   let switchingUrl: string | null = null
 
+  /**
+   * 切换生效（幂等）：写当前主机地址 + 整页刷新回首页。
+   * 整页刷新会重建所有 store/WS/路由，首页守卫自动跳「第一个项目最近 session」，
+   * 因此同一次切换中可能被调用两次（switchHost 流程 + authSuccessFor 收尾）：
+   * 第二次 assign 会取消并重启同地址导航（或等价 reload），最终仍落在 `/`，
+   * current 键同值写入，无状态破坏。
+   */
+  function commitSwitch(targetUrl: string): void {
+    writeCurrentHostUrl(targetUrl)
+    window.location.assign('/')
+  }
+
 /**
    * 切换主机（需求 4/5/6）。流程：
-   * 1. 探测目标主机认证状态（未缓存时；网络失败中止切换）；
+   * 1. 每次切换都实时探测目标主机（GET /auth/status）确认可达并取认证状态；
+   *    网络错误 = 不可达，提示并中止切换；
    * 2. 启用认证的主机：本地 token 未过期 → 调 /auth/refresh 续期 7 天
    *    （顺带探测服务重启/吊销）；返回 401 或本地已过期/无 token →
    *    弹重认证表单（用户名/密码/验证码，用户名预填）；用户取消则中止；
@@ -209,17 +307,18 @@ export const useHostsStore = defineStore('hosts', () => {
     }
     switchingUrl = targetUrl
     try {
-      // 1) 认证状态探测（仅缓存缺失时；网络失败 = 主机不可达，中止切换）
-      let authEnabled = target.authEnabled
-      if (authEnabled === undefined) {
-        try {
-          const status = await fetchAuthStatus({ baseUrl: target.url })
-          authEnabled = status.enabled
-          updateHost(target.url, { authEnabled })
-          hosts.value = readHosts()
-        } catch {
-          throw new Error('hosts.switchUnreachable')
-        }
+      // 1) 实时探测目标主机（每次切换都请求 /auth/status，不依赖本地缓存）：
+      //    一方面确认目标可达——网络错误提示并中止切换，避免切过去后
+      //    整页请求全部失败；另一方面拿到认证开关的最新状态（服务端可能
+      //    已通过设置页开启/关闭认证）。
+      let authEnabled: boolean
+      try {
+        const status = await fetchAuthStatus({ baseUrl: target.url })
+        authEnabled = status.enabled
+        updateHost(target.url, { authEnabled })
+        hosts.value = readHosts()
+      } catch {
+        throw new Error('hosts.switchUnreachable')
       }
 
       // 2) 启用认证的主机：刷新续期或重新认证
@@ -266,9 +365,10 @@ export const useHostsStore = defineStore('hosts', () => {
       }
     }
 
-    // 3) 生效：持久化 + 整页刷新（重建 store/WS/路由，首页守卫跳转目标会话）
-    writeCurrentHostUrl(target.url)
-    window.location.assign('/')
+    // 3) 生效：持久化 + 整页刷新（重建 store/WS/路由，首页守卫跳转目标会话）。
+    //    认证收尾路径（authSuccessFor）可能已先行完成本次切换（见其注释），
+    //    此处重复调用幂等无碍。
+    commitSwitch(target.url)
     return true
   }
 
@@ -289,6 +389,8 @@ export const useHostsStore = defineStore('hosts', () => {
     authCancel,
     probeHostUrl,
     addHostRecord,
+    updateHostInfo,
+    removeHost,
     cacheAuthEnabled,
     switchHost,
     hostByUrl,
