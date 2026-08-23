@@ -64,32 +64,32 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // P0 优化：不把 442 个 JS 块全部 precache，仅缓存壳（html/css/小 JS），大块按需网络加载
+        // P0 优化：壳 precache + 重块 runtimeCache，避免 343 文件 8MB 全量预缓存阻塞 SW 安装
+        // - 仅预缓存 html/css/图标/音效等壳资源（~7 项，<200KB），JS 全部走 runtimeCaching 按需缓存
+        // - 首屏 vendor/index/incremark 等仍通过浏览器 modulepreload 加载，离线后由 runtime CacheFirst 兜底
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2,mp3}'],
         globIgnores: [
-          '**/mermaid*.js',
-          '**/cytoscape*.js',
-          '**/katex*.js',
-          '**/emacs-lisp*.js',
-          '**/cpp-*.js',
-          '**/wasm-*.js',
-          '**/codemirror*.js',
-          '**/naive*.js',
-          '**/xterm*.js',
+          '**/assets/**', // 全部 JS/CSS chunk 按需缓存，不预缓存；避免 200+ 语言/主题包 8MB 爆体积
         ],
-        maximumFileSizeToCacheInBytes: 2.5 * 1024 * 1024,
+        maximumFileSizeToCacheInBytes: 1 * 1024 * 1024,
         navigateFallback: '/index.html',
+        // 避免预缓存带 hash 的 asset 被旧 SW 误判为更新风暴
+        dontCacheBustURLsMatching: /assets\/.*\.[a-f0-9]{8}\.(js|css)$/,
         runtimeCaching: [
           {
             urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/icons/'),
             handler: 'CacheFirst' as const,
             options: { cacheName: 'zacp-icons', expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 } },
           },
-          // 大块运行时缓存：按需下载后缓存 30 天
+          // JS/CSS 按需缓存：StaleWhileRevalidate 保证首屏总走网络最新，离线回退缓存
           {
             urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/assets/'),
-            handler: 'CacheFirst' as const,
-            options: { cacheName: 'zacp-assets', expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 } },
+            handler: 'StaleWhileRevalidate' as const,
+            options: {
+              cacheName: 'zacp-assets',
+              expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
           },
         ],
       },
@@ -98,9 +98,20 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
-  // P0 优化：手动分包，减少首屏预加载链长度
+  // P0 优化：手动分包 + 首屏 modulePreload 过滤 + PWA 按需缓存
   build: {
     chunkSizeWarningLimit: 600,
+    modulePreload: {
+      polyfill: true,
+      // 首屏 html 仅预加载 vendor/naive/incremark 等壳；mermaid/codemirror/xterm/katex 等重块按需加载，避免 3MB mermaid 阻塞 LCP
+      resolveDependencies(_filename, deps, { hostType }) {
+        if (hostType !== 'html') return deps
+        // 过滤首屏不需要预加载的重型分包（已 manualChunks 拆出，按需动态 import）
+        const heavy = /assets\/(mermaid|codemirror|xterm|katex|cytoscape|wasm|cpp|emacs-lisp)-.*\.js$/
+        const heavy2 = /(mermaid|codemirror|xterm|katex)/i
+        return deps.filter((d) => !heavy.test(d) && !heavy2.test(d))
+      },
+    },
     rollupOptions: {
       output: {
         manualChunks(id: string) {
@@ -110,6 +121,8 @@ export default defineConfig({
           if (id.includes('node_modules/@codemirror')) return 'codemirror'
           if (id.includes('node_modules/@incremark')) return 'incremark'
           if (id.includes('node_modules/mermaid')) return 'mermaid'
+          if (id.includes('node_modules/katex')) return 'katex'
+          if (id.includes('node_modules/cytoscape')) return 'cytoscape'
         },
       },
     },
