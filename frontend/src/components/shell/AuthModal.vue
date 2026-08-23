@@ -81,9 +81,11 @@ async function handleSubmit() {
   if (!h || submitting.value) {
     return
   }
-  // 发起前快照目标主机：登录在途时弹窗可能被换到其它主机（401/守卫/二次切换），
-  // 凭证必须写回发起登录的主机，见 hostsStore.authSuccessFor
+  // 发起前快照目标主机与请求代际：登录在途时弹窗可能被换主机/取消/同主机重开，
+  // 凭证必须写回发起登录的主机，且只有最新代际的响应才做页面级收尾，
+  // 见 hostsStore.authSuccessFor
   const targetUrl = h.url
+  const authSeq = hostsStore.currentAuthSeq()
   const uname = username.value.trim()
   if (!uname) {
     errorMsg.value = t('login.usernameRequired')
@@ -113,8 +115,8 @@ async function handleSubmit() {
       c || undefined,
       { baseUrl: targetUrl },
     )
-    // 写回发起主机的记录（token/用户名/过期时间）；若请求仍匹配当前弹窗则关闭并 resolve
-    hostsStore.authSuccessFor(targetUrl, res)
+    // 写回发起主机的记录（token/用户名/过期时间）；若请求仍匹配当前弹窗（URL+代际）则关闭并 resolve
+    hostsStore.authSuccessFor(targetUrl, res, authSeq)
     message.success(t('login.success'))
     // 仅当认证目标就是当前主机时才恢复主通道（切换场景下当前主机连接原样保留）
     if (targetUrl === hostsStore.currentUrl) {

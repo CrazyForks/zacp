@@ -714,6 +714,9 @@ export const useSessionStore = defineStore('session', () => {
         .then(() => {})
         .catch((e) => {
           loadingError.value = e instanceof Error ? e.message : String(e)
+          // 失败不缓存：下次调用自动重试。避免「401/网络失败 → 空列表」的结果
+          // 被永久锁进 initialPromise——重新登录/认证成功后必须能用新 token 重拉。
+          initialPromise = null
         })
         .finally(() => {
           loading.value = false

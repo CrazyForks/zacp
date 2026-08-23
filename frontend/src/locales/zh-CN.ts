@@ -37,6 +37,7 @@ export default {
     confirmDelete: '确定删除该会话？删除后不可恢复。',
     loadMoreSessions: '查看更多',
     runningHint: '进行中',
+    retryLoad: '重试',
   },
   tty: {
     title: '终端',

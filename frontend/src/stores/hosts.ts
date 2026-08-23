@@ -60,12 +60,20 @@ export const useHostsStore = defineStore('hosts', () => {
   const authModalOpen = ref(false)
   /** 弹窗当前展示的目标主机（仅 UI 渲染用；业务归属以 authRequest.host 为准） */
   const authModalHost = ref<HostConfig | null>(null)
+  /** 认证请求代际：每次 requestAuth 递增，AuthModal 提交时快照，响应到达时校验「仍是最新弹窗」 */
+  let authSeq = 0
   let authRequest: {
     /** 发起认证请求时快照的目标主机：弹窗可能被后续请求换主机，成功回调必须写回发起时的主机 */
     host: HostConfig
+    seq: number
     promise: Promise<LoginResult | null>
     resolve: (r: LoginResult | null) => void
   } | null = null
+
+  /** 当前最新认证请求的代际号（AuthModal 提交时快照；无活动弹窗返回 -1） */
+  function currentAuthSeq(): number {
+    return authRequest?.seq ?? -1
+  }
 
   /**
    * 打开认证弹窗并等待结果（null = 用户取消）。
@@ -86,7 +94,7 @@ export const useHostsStore = defineStore('hosts', () => {
     const promise = new Promise<LoginResult | null>((resolve) => {
       resolveFn = resolve
     })
-    authRequest = { host, promise, resolve: resolveFn }
+    authRequest = { host, seq: ++authSeq, promise, resolve: resolveFn }
     return promise
   }
 
@@ -108,7 +116,7 @@ export const useHostsStore = defineStore('hosts', () => {
    * 仅当当前 in-flight 请求仍匹配该主机时才关闭弹窗并 resolve；
    * 不匹配 = 该请求已被换主机流程取消，此次登录只落库、不打扰新弹窗。
    */
-  function authSuccessFor(targetUrl: string, result: LoginResult): void {
+  function authSuccessFor(targetUrl: string, result: LoginResult, seq: number): void {
     updateHost(targetUrl, {
       token: result.token,
       tokenExpiresAt: Date.now() + result.expiresIn * 1000,
@@ -116,34 +124,30 @@ export const useHostsStore = defineStore('hosts', () => {
       authEnabled: true,
     })
     hosts.value = readHosts()
+    const req = authRequest
+    // 本次提交是否仍是「最新弹窗请求」：弹窗可能在登录在途时被换主机、取消或
+    // 同主机重开（URL 相同但代际不同），因此同时校验主机 URL 与代际序号——
+    // 仅最新代际的请求才执行页面级收尾；旧代际迟到响应只落库、不打扰当前弹窗。
+    const isCurrentRequest = !!req && req.host.url === targetUrl && req.seq === seq
     // 认证目标恰为当前主机时，同步 auth store 的响应式登录态
     if (targetUrl === currentUrl.value) {
       useAuthStore().applyLoggedIn(result.token, result.username)
     }
-    const req = authRequest
-    if (req && req.host.url === targetUrl) {
+    if (isCurrentRequest) {
       authRequest = null
       authModalOpen.value = false
-      req.resolve(result)
-    }
-    // 切换场景收尾：requestAuth 只有切换流程会传入非当前主机（401/守卫/WS
-    // 的重认证入口一律传当前主机），故「认证成功且目标 ≠ 当前主机」即代表
-    // 本次登录服务于一次切换。无论切换的 promise 链路是否已被并发事件中止
-    // （弹窗被 401 抢占换目标时 switchHost 会提前收到 null 而放弃），认证成功
-    // 本身 = 用户明确要切过去——这里直接完成切换并整页刷新，杜绝「登录成功
-    // 但页面数据仍是旧主机」。当前主机 401 重认证（targetUrl === currentUrl）
-    // 不进入本分支。
-    //
-    // 用 authRequest 是否为空区分「纯取消」与「认证流程仍在」：authSuccessFor
-    // 仅在用户提交登录（AuthModal.handleSubmit）成功后才会被调用，迟到响应必然
-    // 意味着用户曾完整输入凭证并点击提交——提交登录本身就是确认切换的意图，
-    // 关闭弹窗不撤销已提交的认证。故仅有活动弹窗请求时仍完成切换；authCancel
-    // 后被置 null（纯取消、无任何后续认证请求）则不切换，响应只落库。
-    // 注释留档：曾考虑用 lastCancelledUrl 排除「取消后又开新弹窗」的窄窗口，
-    // 但那会把 401 抢占（切换弹窗被系统重认证顶替）场景一并排除——正是用户
-    // 报告的「登录成功但页面不刷新」根因，故不采用。
-    if (targetUrl !== currentUrl.value && authRequest) {
-      commitSwitch(targetUrl)
+      req!.resolve(result)
+      // 登录成功 → 用新 token 重载数据（整页重建，首屏请求自动重拉）：
+      // - 当前主机重认证（401 触发）：直接 reload——此前 /api/v1/workspaces 等
+      //   已因旧 token 401 失败且 loadInitial 把失败结果缓存在内存，不重建页面
+      //   就不会重拉，造成「登录成功但项目/会话列表仍为空」；
+      // - 切换场景（目标 ≠ 当前主机）：完成切换 + 整页刷新（与 switchHost 的
+      //   收尾幂等，双通道最终都落在同一整页重建）。
+      if (targetUrl === currentUrl.value) {
+        window.location.reload()
+      } else {
+        commitSwitch(targetUrl)
+      }
     }
   }
 
@@ -385,6 +389,7 @@ export const useHostsStore = defineStore('hosts', () => {
     authModalHost,
     requestAuth,
     requestCurrentHostAuth,
+    currentAuthSeq,
     authSuccessFor,
     authCancel,
     probeHostUrl,

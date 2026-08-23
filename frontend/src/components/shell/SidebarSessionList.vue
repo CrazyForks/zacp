@@ -221,6 +221,14 @@ function onNewSessionInWorkspace(wsId: number) {
   void router.push({ name: 'new', query: { workspaceId: String(wsId) } })
 }
 
+/**
+ * 重试首屏加载（loadInitial 失败后 initialPromise 已被清空，
+ * 重新调用即用当前凭证重新请求项目列表）。
+ */
+function retryLoadInitial() {
+  void sessionStore.loadInitial()
+}
+
 /** 移除项目（软删除）：项目从侧栏隐藏，同路径再次添加时整体恢复（含会话/消息） */
 async function onRemoveWorkspace(ws: Workspace) {
   try {
@@ -364,6 +372,17 @@ async function onRemoveWorkspace(ws: Workspace) {
         </template>
       </div>
     </template>
+
+    <!-- 首屏加载失败：错误信息 + 重试（避免把 401/网络故障伪装成「暂无项目」的空列表） -->
+    <div
+      v-else-if="sessionStore.loadingError"
+      class="flex flex-col items-center gap-2 px-3 py-6 text-xs text-red-500"
+    >
+      <span class="text-center leading-relaxed">{{ sessionStore.loadingError }}</span>
+      <n-button size="tiny" @click="retryLoadInitial">
+        {{ t('shell.retryLoad') }}
+      </n-button>
+    </div>
 
     <!-- 无任何项目：引导新建项目 -->
     <n-empty v-else size="small" :description="t('shell.noProjectsHint')" />

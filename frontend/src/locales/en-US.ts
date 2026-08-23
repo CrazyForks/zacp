@@ -38,6 +38,7 @@ export default {
     confirmDelete: 'Delete this session? This cannot be undone.',
     loadMoreSessions: 'Load more',
     runningHint: 'In progress',
+    retryLoad: 'Retry',
   },
   tty: {
     title: 'Terminal',
