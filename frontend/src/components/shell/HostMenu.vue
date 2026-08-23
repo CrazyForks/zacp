@@ -31,6 +31,14 @@ const hostsStore = useHostsStore()
 /** 当前主机（切换/改名后自动跟随 store） */
 const current = computed(() => hostsStore.current)
 
+/** 主机显示名：内置本地主机按当前语言显示（localStorage 中的存储值固定为「本地主机」） */
+function hostDisplayName(h: HostConfig | undefined | null): string {
+  if (!h) {
+    return ''
+  }
+  return h.builtin ? t('hosts.localName') : h.name
+}
+
 /** 添加弹窗（HostFormModal add 模式）与编辑弹窗（edit 模式）开关 */
 const addHostOpen = ref(false)
 const editHostOpen = ref(false)
@@ -103,7 +111,7 @@ function confirmDeleteHost(h: HostConfig) {
         >
           <ServerOutline class="h-4 w-4 shrink-0 text-ink-muted" />
           <span class="min-w-0 flex-1 truncate text-sm font-medium text-ink-secondary">
-            {{ current?.name }}
+            {{ hostDisplayName(current) }}
           </span>
           <ChevronDownOutline class="h-3.5 w-3.5 shrink-0 text-ink-muted" />
         </button>
@@ -133,7 +141,7 @@ function confirmDeleteHost(h: HostConfig) {
             @click="onPick(h.url)"
           >
             <span class="block truncate text-sm text-ink">
-              {{ h.name }}
+              {{ hostDisplayName(h) }}
             </span>
             <span class="block truncate text-xs text-ink-muted">{{ h.url }}</span>
           </button>

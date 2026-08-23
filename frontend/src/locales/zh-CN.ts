@@ -296,9 +296,11 @@ export default {
   },
   hosts: {
     listTitle: '主机列表',
+    localName: '本地主机',
     addAction: '添加主机',
     addTitle: '添加主机',
     nameRequired: '请输入显示名称',
+    nameTooLong: '显示名称不能超过 {max} 个字符',
     urlRequired: '请输入主机地址',
     urlInvalid: '请输入以 http:// 或 https:// 开头的有效地址',
     namePlaceholder: '显示名称，如「办公室」',

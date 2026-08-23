@@ -34,10 +34,14 @@ const captchaLoading = ref(false)
 const submitting = ref(false)
 const errorMsg = ref('')
 
-/** 弹窗标题：登录目标主机（带主机名，区分切换场景） */
+/** 弹窗标题：登录目标主机（内置本地主机按当前语言显示，区分切换场景） */
 const title = computed(() => {
-  const name = host.value?.name
-  return name ? `${t('hosts.authTitle')} · ${name}` : t('hosts.authTitle')
+  const h = host.value
+  if (!h) {
+    return t('hosts.authTitle')
+  }
+  const name = h.builtin ? t('hosts.localName') : h.name
+  return `${t('hosts.authTitle')} · ${name}`
 })
 
 async function refreshCaptcha() {

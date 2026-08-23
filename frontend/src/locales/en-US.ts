@@ -304,9 +304,11 @@ export default {
   },
   hosts: {
     listTitle: 'Host list',
+    localName: 'Local host',
     addAction: 'Add host',
     addTitle: 'Add host',
     nameRequired: 'Display name is required',
+    nameTooLong: 'Display name must be {max} characters or fewer',
     urlRequired: 'Host address is required',
     urlInvalid: 'Enter a valid address starting with http:// or https://',
     namePlaceholder: 'Display name, e.g. “Office”',

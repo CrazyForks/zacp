@@ -10,6 +10,7 @@ import { ApiError } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import {
   type HostConfig,
+  HOST_NAME_MAX,
   currentHostUrl,
   findHost,
   findHostById,
@@ -179,15 +180,22 @@ export const useHostsStore = defineStore('hosts', () => {
    */
   function addHostRecord(name: string, rawUrl: string, auth?: LoginResult): HostConfig {
     const url = normalizeHostUrl(rawUrl)
-    if (!url || !name.trim()) {
-      throw new Error(name.trim() ? 'hosts.urlInvalid' : 'hosts.nameRequired')
+    const trimmedName = name.trim()
+    if (!url) {
+      throw new Error('hosts.urlInvalid')
+    }
+    if (!trimmedName) {
+      throw new Error('hosts.nameRequired')
+    }
+    if (trimmedName.length > HOST_NAME_MAX) {
+      throw new Error('hosts.nameTooLong')
     }
     if (hosts.value.some((h) => h.url === url)) {
       throw new Error('hosts.duplicate')
     }
     const host: HostConfig = {
       id: newHostId(),
-      name: name.trim(),
+      name: trimmedName,
       url,
       authEnabled: auth ? true : undefined,
     }
@@ -226,10 +234,18 @@ export const useHostsStore = defineStore('hosts', () => {
     if (host.builtin) {
       throw new Error('hosts.builtinProtected')
     }
+    // 名称校验兜底（UI 已用 maxlength 限制，store 直调不绕过）
+    const trimmedName = next.name.trim()
+    if (!trimmedName) {
+      throw new Error('hosts.nameRequired')
+    }
+    if (trimmedName.length > HOST_NAME_MAX) {
+      throw new Error('hosts.nameTooLong')
+    }
     const urlChanged = host.url !== next.url
     if (urlChanged) {
       updateHostById(id, {
-        name: next.name,
+        name: trimmedName,
         url: next.url,
         token: undefined,
         tokenExpiresAt: undefined,
@@ -238,7 +254,7 @@ export const useHostsStore = defineStore('hosts', () => {
       hosts.value = readHosts()
       return host.url === currentUrl.value
     }
-    updateHostById(id, { name: next.name })
+    updateHostById(id, { name: trimmedName })
     hosts.value = readHosts()
     return false
   }

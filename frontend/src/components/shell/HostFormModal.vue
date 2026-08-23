@@ -6,7 +6,7 @@ import { fetchCaptcha, login } from '@/api'
 import { ApiError } from '@/api/types'
 import { useHostsStore } from '@/stores/hosts'
 import { isHostStoreError } from '@/utils/hostError'
-import { normalizeHostUrl, type HostConfig } from '@/utils/hostStorage'
+import { normalizeHostUrl, HOST_NAME_MAX, type HostConfig } from '@/utils/hostStorage'
 
 /**
  * 主机表单弹窗（添加 / 编辑共用一套表单与校验逻辑）。
@@ -124,9 +124,9 @@ async function handleSubmit() {
       await handleAdd(normalized)
     }
   } catch (e) {
-    // store 业务错误（地址重复等）按其 i18n key 显示；网络/解析失败统一提示
+    // store 业务错误（地址重复/名称超长等）按其 i18n key 显示；网络/解析失败统一提示
     formError.value = isHostStoreError(e)
-      ? t(e.message)
+      ? t(e.message, { max: HOST_NAME_MAX })
       : t('hosts.addCheckFailed')
   } finally {
     probing.value = false
@@ -222,8 +222,8 @@ async function handleAuthSubmit() {
         authError.value = t('login.failed')
       }
     } else if (isHostStoreError(e)) {
-      // addHostRecord 的重复地址等业务错误
-      authError.value = t(e.message)
+      // addHostRecord 的重复地址/名称超长等业务错误
+      authError.value = t(e.message, { max: HOST_NAME_MAX })
     } else {
       authError.value = t('login.failed')
     }
@@ -256,6 +256,7 @@ function backToForm() {
       <n-input
         v-model:value="name"
         :placeholder="t('hosts.namePlaceholder')"
+        :maxlength="HOST_NAME_MAX"
         size="large"
       />
       <n-input
