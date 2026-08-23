@@ -349,6 +349,10 @@ func (s *FileService) UploadFiles(workspaceID uint, relDir string, files []Uploa
 		// 超限即报错（该文件是新建的，删除半成品不留残留）
 		n, copyErr := io.Copy(out, io.LimitReader(f.Reader, limit+1))
 		closeErr := out.Close()
+		// P0 优化：及时关闭上传 Reader，释放 FD（配合 handler 兜底 defer，峰值由 N→1）
+		if closer, ok := f.Reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
 		if copyErr != nil {
 			_ = os.Remove(dst)
 			return nil, fmt.Errorf("write file %s: %w", name, copyErr)

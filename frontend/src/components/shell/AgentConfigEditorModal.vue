@@ -165,7 +165,7 @@ async function open() {
   // mountExpanded 会静默跳过（不报错也不重试），导致首个面板内容空白、
   // 直到再次展开/折叠触发 watch 才补挂载。
   await nextTick()
-  mountExpanded()
+  await mountExpanded()
 }
 
 // ---------------------------------------------------------------------------
@@ -173,12 +173,12 @@ async function open() {
 // ---------------------------------------------------------------------------
 
 /** 为文件创建一个编辑器并挂载到 host（extensions 与工作区编辑器 FileEditorDrawer 保持一致） */
-function createEditor(host: HTMLDivElement, file: EditorFile): EditorView {
+async function createEditor(host: HTMLDivElement, file: EditorFile): Promise<EditorView> {
   // 暗色：one-dark 主题 + 其高亮样式兜底；亮色用默认高亮样式
   const themeExts: Extension[] = appStore.isDark
     ? [oneDark, syntaxHighlighting(oneDarkHighlightStyle, { fallback: true })]
     : []
-  const lang = detectLanguage(file.path)
+  const lang = await detectLanguage(file.path)
 
   // Ctrl/Cmd+S 保存当前文件：返回 true 吃掉按键，避免触发默认行为
   const saveBinding: KeyBinding = {
@@ -233,14 +233,14 @@ function createEditor(host: HTMLDivElement, file: EditorFile): EditorView {
 }
 
 /** 为所有已展开且已加载完成的文件挂载编辑器（幂等：已有实例的跳过） */
-function mountExpanded() {
+async function mountExpanded() {
   for (const path of expandedNames.value) {
     const file = files.value.find((f) => f.path === path)
     if (!file || file.loading || file.loadError || views.has(path)) continue
     const host = editorHosts.get(path)
     if (!host) continue
     try {
-      views.set(path, createEditor(host, file))
+      views.set(path, await createEditor(host, file))
     } catch (e) {
       file.loadError = e instanceof Error ? e.message : '编辑器初始化失败'
     }

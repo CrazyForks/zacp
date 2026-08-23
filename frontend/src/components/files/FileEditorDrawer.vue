@@ -110,7 +110,7 @@ async function mountEditor(doc: string) {
     ? [oneDark, syntaxHighlighting(oneDarkHighlightStyle, { fallback: true })]
     : []
 
-  const lang = detectLanguage(props.entry?.path ?? '')
+  const lang = await detectLanguage(props.entry?.path ?? '')
 
   // Ctrl/Cmd+S 保存：返回 true 吃掉按键，避免触发默认行为
   const saveBinding: KeyBinding = {

@@ -8,7 +8,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"math/big"
 	mrand "math/rand/v2"
 	"sync"
 	"time"
@@ -20,6 +19,12 @@ const (
 	captchaLength = 4
 	captchaWidth  = 120
 	captchaHeight = 40
+)
+
+// 内存控制：验证码上限与后台清理（P0 优化）
+const (
+	captchaMaxEntries      = 1000
+	captchaCleanupInterval = 5 * time.Minute
 )
 
 // captchaEntry 单个验证码条目。
@@ -35,27 +40,51 @@ type CaptchaStore struct {
 	entries map[string]*captchaEntry
 }
 
-// NewCaptchaStore 创建验证码存储。
+// NewCaptchaStore 创建验证码存储，并启动后台清理。
 func NewCaptchaStore() *CaptchaStore {
-	return &CaptchaStore{entries: make(map[string]*captchaEntry)}
+	s := &CaptchaStore{
+		entries: make(map[string]*captchaEntry),
+	}
+	go func() {
+		ticker := time.NewTicker(captchaCleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			s.mu.Lock()
+			for k, v := range s.entries {
+				if now.After(v.expire) {
+					delete(s.entries, k)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}()
+	return s
 }
-
 // Generate 生成新验证码：返回 id 与 base64 图片（data URI 前缀由调用方拼接）。
+// P0 优化：不再每次全扫，仅在接近上限时清理过期项。
 func (s *CaptchaStore) Generate() (id string, b64Image string) {
 	code := randomCaptchaCode(captchaLength)
 	id = newTokenValue() // 复用 token 生成：32字节 hex
 	imgB64 := renderCaptchaImage(code)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	// 懒清理过期项（避免长期不访问时堆积）
-	now := time.Now()
-	for k, v := range s.entries {
-		if now.After(v.expire) {
-			delete(s.entries, k)
+	if len(s.entries) >= captchaMaxEntries {
+		now := time.Now()
+		for k, v := range s.entries {
+			if now.After(v.expire) {
+				delete(s.entries, k)
+			}
+		}
+		if len(s.entries) >= captchaMaxEntries {
+			for k := range s.entries {
+				delete(s.entries, k)
+				break
+			}
 		}
 	}
-	s.entries[id] = &captchaEntry{code: code, expire: now.Add(captchaTTL)}
+	s.entries[id] = &captchaEntry{code: code, expire: time.Now().Add(captchaTTL)}
+	s.mu.Unlock()
 	return id, imgB64
 }
 
@@ -102,15 +131,20 @@ func equalFold(a, b string) bool {
 }
 
 // randomCaptchaCode 生成指定长度的字母数字验证码（去 0/O/1/I 混淆，32字符）。
-// 后端 Verify 统一大小写不敏感（equalFold），前端输入大小写均可。
+// P0 优化：用 crypto/rand.Read 批量取随机字节替代 big.Int，减少分配。
 func randomCaptchaCode(n int) string {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-	b := make([]byte, n)
-	for i := range b {
-		idx, _ := crand.Int(crand.Reader, big.NewInt(int64(len(alphabet))))
-		b[i] = alphabet[idx.Int64()]
+	buf := make([]byte, n)
+	if _, err := crand.Read(buf); err != nil {
+		for i := range buf {
+			buf[i] = alphabet[mrand.IntN(len(alphabet))]
+		}
+		return string(buf)
 	}
-	return string(b)
+	for i := range buf {
+		buf[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	return string(buf)
 }
 
 // charFont 5x7 点阵字体（数字+大写字母，去混淆后仍保留 I/O 字形以备兼容）。

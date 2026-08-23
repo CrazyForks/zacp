@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -160,15 +161,20 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// 提取上传文件：立即打开 reader，后续由 service 逐个写入
+	// P0 优化：避免循环内 defer 累积，改为统一收集后关闭；Service 侧也会逐个关闭 Reader，峰值 FD 由 N→1 逐步释放
 	files := make([]service.UploadFile, 0, len(headers))
 	for _, fh := range headers {
 		src, err := fh.Open()
 		if err != nil {
+			// 已打开的先关闭，避免泄漏
+			for _, f := range files {
+				if closer, ok := f.Reader.(io.Closer); ok {
+					_ = closer.Close()
+				}
+			}
 			writeError(c, http.StatusBadRequest, "invalid_file", "文件读取失败: "+err.Error())
 			return
 		}
-		defer src.Close()
 		files = append(files, service.UploadFile{
 			Name:     fh.Filename,
 			MimeType: fh.Header.Get("Content-Type"),
@@ -176,6 +182,14 @@ func (h *FileHandler) Upload(c *gin.Context) {
 			Reader:   src,
 		})
 	}
+	// 统一兜底关闭（Service 已逐个关闭，此处仅防 Service 提前返回未关闭的剩余项）
+	defer func() {
+		for _, f := range files {
+			if closer, ok := f.Reader.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+	}()
 
 	results, err := h.svc.UploadFiles(id, c.PostForm("dir"), files)
 	if err != nil {
@@ -185,14 +199,6 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"files": results})
 }
 
-// UploadTemp POST /api/v1/files/upload-temp
-//
-// 聊天输入框快捷键（Ctrl/Cmd+V）粘贴上传专用：文件写入系统临时目录
-// /tmp/{yyyyMMddHH}/（目录由后端生成，不接受客户端路径），返回绝对路径列表，
-// 前端据此填充 @/tmp/... 引用。与工作区上传（/workspaces/:id/files/upload）不同：
-// 允许同名覆盖、不依赖 workspace、返回绝对路径；临时目录不做清理，交由系统回收。
-//
-// multipart 表单：files（一个或多个文件字段）。无 dir 参数。
 func (h *FileHandler) UploadTemp(c *gin.Context) {
 	// 请求体整体限流，防止超大 multipart 打爆内存/磁盘（与工作区上传同一上限）
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, service.MaxUploadBodyBytes)
@@ -216,10 +222,14 @@ func (h *FileHandler) UploadTemp(c *gin.Context) {
 	for _, fh := range headers {
 		src, err := fh.Open()
 		if err != nil {
+			for _, f := range files {
+				if closer, ok := f.Reader.(io.Closer); ok {
+					_ = closer.Close()
+				}
+			}
 			writeError(c, http.StatusBadRequest, "invalid_file", "文件读取失败: "+err.Error())
 			return
 		}
-		defer src.Close()
 		files = append(files, service.UploadFile{
 			Name:     fh.Filename,
 			MimeType: fh.Header.Get("Content-Type"),
@@ -227,6 +237,13 @@ func (h *FileHandler) UploadTemp(c *gin.Context) {
 			Reader:   src,
 		})
 	}
+	defer func() {
+		for _, f := range files {
+			if closer, ok := f.Reader.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+	}()
 
 	results, err := h.svc.UploadTempFiles(files)
 	if err != nil {

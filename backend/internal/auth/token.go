@@ -16,6 +16,12 @@ const (
 	ResourceTokenTTL = 12 * time.Hour
 )
 
+// 内存控制：token 上限与后台清理周期（P0 优化，防无界增长 + 消 O(n) 热点）
+const (
+	tokenMaxEntries      = 5000
+	tokenCleanupInterval = 5 * time.Minute
+)
+
 // TokenKind 区分主 token（登录态）与资源 token（文件直链）。
 type TokenKind int
 
@@ -46,9 +52,32 @@ type TokenStore struct {
 	entries map[string]*tokenEntry
 }
 
-// NewTokenStore 创建 token 存储。
+// NewTokenStore 创建 token 存储，并启动后台过期清理（每 5 分钟全扫一次）。
 func NewTokenStore() *TokenStore {
-	return &TokenStore{entries: make(map[string]*tokenEntry)}
+	s := &TokenStore{entries: make(map[string]*tokenEntry)}
+	go s.cleanupLoop()
+	return s
+}
+
+// cleanupLoop 后台定时清理过期 token，避免 issue 路径 O(n) 全扫。
+func (s *TokenStore) cleanupLoop() {
+	ticker := time.NewTicker(tokenCleanupInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.cleanExpired()
+	}
+}
+
+// cleanExpired 删除所有过期条目（后台周期调用，O(n) 但低频）。
+func (s *TokenStore) cleanExpired() {
+	now := time.Now()
+	s.mu.Lock()
+	for k, e := range s.entries {
+		if now.After(e.expiresAt) {
+			delete(s.entries, k)
+		}
+	}
+	s.mu.Unlock()
 }
 
 // IssueMain 签发主 token（登录态），TTL 7 天。
@@ -70,22 +99,31 @@ func (s *TokenStore) IssueResource(workspace, path string) string {
 	})
 }
 
-// issue 生成随机 token 并写入存储。写入前顺带清理一次过期条目
-// （懒清理只在校验时触发，若用户只签发不消费，签发路径是回收过期项的唯一机会）。
+// issue 生成随机 token 并写入存储。
+// P0 优化：不再每次全扫 O(n)；仅在接近上限时触发一次清理，命中过期项的清理在 Validate 路径单条删除。
 func (s *TokenStore) issue(entry *tokenEntry) string {
 	token := newTokenValue()
-	now := time.Now()
 	s.mu.Lock()
-	for t, e := range s.entries {
-		if now.After(e.expiresAt) {
-			delete(s.entries, t)
+	// 仅当条目数接近上限时做一次过期清理，避免无界增长
+	if len(s.entries) >= tokenMaxEntries {
+		now := time.Now()
+		for k, e := range s.entries {
+			if now.After(e.expiresAt) {
+				delete(s.entries, k)
+			}
+		}
+		// 仍超限则淘汰一个最旧条目（map 随机首项），保证有界
+		if len(s.entries) >= tokenMaxEntries {
+			for k := range s.entries {
+				delete(s.entries, k)
+				break
+			}
 		}
 	}
 	s.entries[token] = entry
 	s.mu.Unlock()
 	return token
 }
-
 // ValidateMain 校验主 token；有效返回持有者 username，过期/不存在/类型不符返回 false。
 func (s *TokenStore) ValidateMain(token string) (username string, ok bool) {
 	s.mu.Lock()

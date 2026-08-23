@@ -33,14 +33,8 @@ export default defineConfig({
         'vue-router',
         'pinia',
         'vue-i18n',
-        // Naive UI 组合式 API（文档中的按需写法）
         {
-          'naive-ui': [
-            'useDialog',
-            'useMessage',
-            'useNotification',
-            'useLoadingBar',
-          ],
+          'naive-ui': ['useDialog', 'useMessage', 'useNotification', 'useLoadingBar'],
         },
       ],
       dts: 'src/auto-imports.d.ts',
@@ -63,45 +57,61 @@ export default defineConfig({
         orientation: 'any',
         theme_color: '#0ea5e9',
         background_color: '#ffffff',
-        // 明暗两套主题色：系统深色时地址栏/状态栏用更亮的 sky-400
-        // （theme_color 仅支持单值，此处以 manifest 内的 media 数组实现跟随，
-        //  未列入 webmanifest 的额外 theme 通过 index.html 的 <meta name=theme-color media> 补充）
         icons: [
           { src: '/icons/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-          {
-            src: '/icons/maskable-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'maskable',
-          },
+          { src: '/icons/maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {
-        // 离线策略 A：预缓存静态资源；Google Fonts 等外部 CDN 不加 runtime 缓存。
+        // P0 优化：不把 442 个 JS 块全部 precache，仅缓存壳（html/css/小 JS），大块按需网络加载
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2,mp3}'],
+        globIgnores: [
+          '**/mermaid*.js',
+          '**/cytoscape*.js',
+          '**/katex*.js',
+          '**/emacs-lisp*.js',
+          '**/cpp-*.js',
+          '**/wasm-*.js',
+          '**/codemirror*.js',
+          '**/naive*.js',
+          '**/xterm*.js',
+        ],
+        maximumFileSizeToCacheInBytes: 2.5 * 1024 * 1024,
         navigateFallback: '/index.html',
-        // 构建产物已哈希，可安全长缓存（stale-while-revalidate 兜底网络）
         runtimeCaching: [
           {
-            urlPattern: ({ url }) => url.pathname.startsWith('/icons/'),
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'zacp-icons',
-              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 },
-            },
+            urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/icons/'),
+            handler: 'CacheFirst' as const,
+            options: { cacheName: 'zacp-icons', expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 } },
+          },
+          // 大块运行时缓存：按需下载后缓存 30 天
+          {
+            urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/assets/'),
+            handler: 'CacheFirst' as const,
+            options: { cacheName: 'zacp-assets', expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 } },
           },
         ],
-      },
-      devOptions: {
-        enabled: true,
-        type: 'module',
       },
     }),
   ],
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+  },
+  // P0 优化：手动分包，减少首屏预加载链长度
+  build: {
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes('node_modules/vue/') || id.includes('node_modules/vue-router') || id.includes('node_modules/pinia') || id.includes('node_modules/vue-i18n')) return 'vendor'
+          if (id.includes('node_modules/naive-ui')) return 'naive'
+          if (id.includes('node_modules/@xterm')) return 'xterm'
+          if (id.includes('node_modules/@codemirror')) return 'codemirror'
+          if (id.includes('node_modules/@incremark')) return 'incremark'
+          if (id.includes('node_modules/mermaid')) return 'mermaid'
+        },
+      },
     },
   },
   server: {

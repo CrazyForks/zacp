@@ -47,21 +47,60 @@ const (
 	loginBlockDuration  = 24 * time.Hour
 )
 
+// 内存控制：attempts 清理与上限（P0 优化，防伪 IP 无界 + 消 O(n) 全扫）
+const (
+	attemptsCleanupInterval = 10 * time.Minute
+	attemptsMaxEntries      = 10000
+)
+
 
 // NewService 从配置初始化认证服务。
 // configPath 为凭证写回目标；为空时 UpdateCredentials 会报错（理论上启动必经 config 加载，不会为空）。
 func NewService(cfg *config.Config, configPath string, log *slog.Logger) *Service {
 	s := &Service{
 		configPath: configPath,
+		log:        log,
 		tokens:     NewTokenStore(),
 		captchas:   NewCaptchaStore(),
 		attempts:   make(map[string]*loginAttempt),
-		log:        log,
 	}
-	if cfg != nil {
-		s.syncFromConfig(cfg)
-	}
+	s.syncFromConfig(cfg)
+	go s.attemptsCleanupLoop()
 	return s
+}
+
+func (s *Service) attemptsCleanupLoop() {
+	ticker := time.NewTicker(attemptsCleanupInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		s.attemptMu.Lock()
+		for k, v := range s.attempts {
+			if !v.blockedUntil.IsZero() && now.After(v.blockedUntil) {
+				delete(s.attempts, k)
+			} else if v.blockedUntil.IsZero() && v.count == 1 {
+				// 单次失败长期不清理的条目，保留至 10 分钟后由下一次全扫按需扩展
+				// 此处不删，避免误伤短期连续尝试；仅清已过期的 blocked
+			}
+		}
+		// 超限则随机淘汰最早的非 blocked 条目，保证有界
+		for len(s.attempts) > attemptsMaxEntries {
+			for k, v := range s.attempts {
+				if v.blockedUntil.IsZero() {
+					delete(s.attempts, k)
+					break
+				}
+			}
+			// 若全为 blocked，则删任意一条
+			if len(s.attempts) > attemptsMaxEntries {
+				for k := range s.attempts {
+					delete(s.attempts, k)
+					break
+				}
+			}
+		}
+		s.attemptMu.Unlock()
+	}
 }
 
 
@@ -189,6 +228,7 @@ func (s *Service) IsBlocked(ip string) bool {
 }
 
 // RecordFailure 记录一次密码错误；5 次后拉黑 24 小时。
+// P0 优化：移除每次全扫 O(n)，仅清当前 IP 的过期状态；全扫由后台定时任务承担。
 func (s *Service) RecordFailure(ip string) {
 	if ip == "" {
 		return
@@ -198,6 +238,21 @@ func (s *Service) RecordFailure(ip string) {
 	now := time.Now()
 	at, ok := s.attempts[ip]
 	if !ok {
+		// 有界控制：若已超限，先尝试淘汰一个过期或单次条目
+		if len(s.attempts) >= attemptsMaxEntries {
+			for k, v := range s.attempts {
+				if !v.blockedUntil.IsZero() && now.After(v.blockedUntil) {
+					delete(s.attempts, k)
+					break
+				}
+			}
+			if len(s.attempts) >= attemptsMaxEntries {
+				for k := range s.attempts {
+					delete(s.attempts, k)
+					break
+				}
+			}
+		}
 		at = &loginAttempt{}
 		s.attempts[ip] = at
 	}
@@ -213,11 +268,6 @@ func (s *Service) RecordFailure(ip string) {
 		at.blockedUntil = now.Add(loginBlockDuration)
 		if s.log != nil {
 			s.log.Warn("login ip blocked", "ip", ip, "until", at.blockedUntil)
-		}
-	}
-	for k, v := range s.attempts {
-		if !v.blockedUntil.IsZero() && now.After(v.blockedUntil) {
-			delete(s.attempts, k)
 		}
 	}
 }

@@ -6,9 +6,15 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
+
+// gzipWriterPool 复用 gzip.Writer，减少每请求 32KB+ 字典分配（P0 优化）
+var gzipWriterPool = sync.Pool{
+	New: func() any { return gzip.NewWriter(nil) },
+}
 
 // Gzip 返回按请求协商 gzip 的响应中间件。
 //
@@ -93,14 +99,19 @@ func (w *gzipResponseWriter) start() {
 	header.Del("Content-Length")
 
 	w.ResponseWriter.WriteHeaderNow()
-	w.gzipWriter = gzip.NewWriter(w.ResponseWriter)
+	gz := gzipWriterPool.Get().(*gzip.Writer)
+	gz.Reset(w.ResponseWriter)
+	w.gzipWriter = gz
 }
 
 func (w *gzipResponseWriter) close() error {
 	if !w.started || w.gzipWriter == nil {
 		return nil
 	}
-	return w.gzipWriter.Close()
+	err := w.gzipWriter.Close()
+	gzipWriterPool.Put(w.gzipWriter)
+	w.gzipWriter = nil
+	return err
 }
 
 func gzipSafeRequest(c *gin.Context) bool {

@@ -68,6 +68,9 @@ func (s *FileService) UploadTempFiles(files []UploadFile) ([]model.FileEntryDTO,
 		// 超限即报错并删除半成品，不留残留。
 		n, copyErr := io.Copy(out, io.LimitReader(f.Reader, limit+1))
 		closeErr := out.Close()
+		if closer, ok := f.Reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
 		if copyErr != nil {
 			_ = os.Remove(dst)
 			return nil, fmt.Errorf("write temp file %s: %w", name, copyErr)

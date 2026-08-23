@@ -8,7 +8,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-const maxOutputQueueBytes = 4 << 20
+const maxOutputQueueBytes = 1 << 20
 
 var errOutputQueueClosed = errors.New("tty output queue closed")
 
