@@ -37,6 +37,12 @@ export interface RequestOptions {
   body?: unknown
   /** 额外请求头 */
   headers?: Record<string, string>
+  /**
+   * 目标主机地址覆盖（http(s)://host[:port]）。
+   * 默认请求「当前主机」；添加主机校验 / 切换前认证 / 刷新 token 等
+   * 未切换当前主机的场景显式传入目标主机。
+   */
+  baseUrl?: string
   /** 取消信号（会话切换 / 组件卸载时传入） */
   signal?: AbortSignal
   /**

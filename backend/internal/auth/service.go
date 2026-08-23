@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,13 @@ import (
 	"github.com/helloxz/zacp/internal/config"
 )
 
+// RefreshMain 相关错误：handler 据此区分状态码。
+var (
+	// ErrAuthDisabled 认证未启用（刷新无意义，前端正常不会调用）。
+	ErrAuthDisabled = errors.New("auth not enabled")
+	// ErrInvalidToken 旧 token 无效/过期/已被吊销。
+	ErrInvalidToken = errors.New("invalid or expired token")
+)
 
 // Service 单用户认证服务：持有启用状态、凭证与内存 token 存储。
 //
@@ -148,6 +156,26 @@ func (s *Service) ValidateMain(token string) bool {
 	}
 	_, ok := s.tokens.ValidateMain(token)
 	return ok
+}
+
+// RefreshMain 刷新主 token：旧 token 有效则吊销并签发新 token（TTL 重置 7 天）。
+// 供前端「切换主机」时续期并探测 token 是否仍有效（服务重启后内存 token 全失，
+// 本地时间预判不可靠，以本接口结果为准）。
+func (s *Service) RefreshMain(token string) (newToken string, expiresIn int, username string, err error) {
+	if token == "" {
+		return "", 0, "", ErrInvalidToken
+	}
+	s.mu.RLock()
+	if !s.enabled {
+		s.mu.RUnlock()
+		return "", 0, "", ErrAuthDisabled
+	}
+	s.mu.RUnlock()
+	uname, newTok, ok := s.tokens.RefreshMain(token)
+	if !ok {
+		return "", 0, "", ErrInvalidToken
+	}
+	return newTok, int(MainTokenTTL.Seconds()), uname, nil
 }
 
 // IssueResourceToken 签发资源 token（文件直链，12 小时，绑定 workspace+path）。

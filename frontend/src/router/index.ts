@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useHostsStore } from '@/stores/hosts'
 import { useSessionStore } from '@/stores/session'
 
 /**
@@ -57,17 +58,22 @@ const router = createRouter({
 /**
  * 认证守卫：登录保护的开关状态来自后端（免认证接口），后端未启用时本守卫完全放行。
  *
- * 规则：
- * - 启用且未登录 → 除 /login 外全部重定向到 /login?redirect=<原地址>（登录后回跳）；
- * - 已登录访问 /login → 回首页；
+ * 规则（多主机改造后）：
+ * - 启用且未登录 → 不再整页重定向 /login：打开「对当前主机」的重认证弹窗，
+ *   页面照常渲染（业务请求 401 也只弹窗，其它主机登录态不受影响）；
+ * - 直接访问 /login → 停留（启用且未登录时，兼容书签/整页登录入口）；已登录或未启用 → 回首页；
  * - 未启用访问 /login → 无需登录，回首页。
  *
- * 注意：守卫先于首页兜底逻辑执行；未登录时首页的 loadInitial 不会被触发
- * （后端会 401，也没必要加载）。
+ * 注意：守卫先于首页兜底逻辑执行；未登录时首页的 loadInitial 不会返回有效数据
+ * （后端会 401），但不会阻断（弹窗认证成功后页面自动恢复）。
  */
 router.beforeEach(async (to) => {
   const authStore = useAuthStore()
   await authStore.ensureStatus()
+  // 把当前主机的认证启用状态缓存进主机记录（切换主机校验复用；仅探测成功时写，避免网络失败误缓存）
+  if (authStore.statusLoaded) {
+    useHostsStore().cacheAuthEnabled(authStore.enabled)
+  }
 
   if (to.name === 'login') {
     if (authStore.enabled && !authStore.hasToken) {
@@ -76,11 +82,8 @@ router.beforeEach(async (to) => {
     return { name: 'home', replace: true } // 已登录或未启用：无需登录页
   }
   if (authStore.enabled && !authStore.hasToken) {
-    return {
-      name: 'login',
-      query: { redirect: to.fullPath },
-      replace: true,
-    }
+    // 未登录：弹当前主机的重认证表单（幂等），不阻止导航
+    useHostsStore().requestCurrentHostAuth()
   }
   return true
 })
@@ -97,6 +100,13 @@ router.beforeEach(async (to) => {
   const sessionStore = useSessionStore()
   // 等待首屏数据就绪（幂等：与 AppShell onMounted 的调用复用同一 promise）
   await sessionStore.loadInitial()
+
+  // 必须等最近会话列表加载后再判定：firstWorkspace 依赖 sessions 确定
+  // 「最新活跃项目」，sessions 为空时只会回退到最近添加的项目；
+  // 而整页刷新（切换主机）后守卫先于侧栏组件挂载执行，sessions 初始为空，
+  // 不等待这里永远会落到 /new 而非第一个项目的最近会话（需求 6）。
+  // loadInitial 只拉项目列表（会话按项目懒加载），故此处补一次最近会话加载。
+  await sessionStore.loadSessions().catch(() => {})
 
   // 「第一个项目」= 侧栏第一个分组（最新会话所在项目；无会话时最近使用），
   // 与 SidebarSessionList 分组顺序一致，避免跳到侧栏后面的项目

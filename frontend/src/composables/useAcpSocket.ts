@@ -2,6 +2,7 @@ import { reactive } from 'vue'
 import { wsUrl } from '@/config/env'
 import type { WsClientMessage, WsServerMessage } from '@/types/ws'
 import { useAuthStore } from '@/stores/auth'
+import { useHostsStore } from '@/stores/hosts'
 import { readAuthToken } from '@/utils/authStorage'
 
 /** WebSocket 子协议前缀（与后端 ws/handler.go 的 wsAuthProtocolPrefix 保持一致） */
@@ -146,10 +147,11 @@ export async function connect() {
     }
     // 连续握手失败兜底：服务重启后内存 token 全部失效（localStorage 里仍是旧 token），
     // 每次握手都会 401——浏览器 WS 无法拿到 HTTP 状态码，只能凭「从未 open 过就关闭」
-    // 累计判断。连续 N 次失败视为 token 已失效：清登录态，由 HTTP 层 401 拦截跳转登录页，
+    // 累计判断。连续 N 次失败视为当前主机 token 已失效：清本地 token 并打开
+    // 重认证弹窗（多主机下只影响当前主机登录态，不再整页跳 /login），
     // 避免每 30s 一次的无效握手无限刷后端日志。
     // 注意：认证未启用时没有「token 失效」概念，握手失败只可能是网络/服务故障，
-    // 不计入失败计数，直接走退避重连，避免纯网络抖动把用户弹去登录页。
+    // 不计入失败计数，直接走退避重连，避免纯网络抖动把用户弹去认证弹窗。
     if (!authStore.enabled) {
       scheduleReconnect()
       return
@@ -158,8 +160,7 @@ export async function connect() {
     if (handshakeFailures >= MAX_HANDSHAKE_FAILURES) {
       handshakeFailures = 0
       authStore.forceLogout()
-      const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-      window.location.assign(`/login?redirect=${redirect}`)
+      useHostsStore().requestCurrentHostAuth()
       return
     }
     scheduleReconnect()

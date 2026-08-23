@@ -67,9 +67,18 @@ export const useAuthStore = defineStore('auth', () => {
     captcha?: string,
   ): Promise<void> {
     const res = await apiLogin(usernameInput, password, captchaId, captcha)
-    token.value = res.token
-    writeAuthToken(res.token)
-    applyStatus({ enabled: true, username: res.username })
+    applyLoggedIn(res.token, res.username, res.expiresIn)
+  }
+
+  /**
+   * 应用登录结果到当前主机（登录页 / 全局重认证弹窗对当前主机认证成功共用）。
+   * token 与过期时间写回当前主机记录（localStorage），页面内响应式状态同步更新。
+   */
+  function applyLoggedIn(tokenValue: string, usernameValue: string, expiresIn = 604800): void {
+    token.value = tokenValue
+    username.value = usernameValue
+    writeAuthToken(tokenValue, Date.now() + expiresIn * 1000)
+    applyStatus({ enabled: true, username: usernameValue })
   }
 
 
@@ -90,6 +99,7 @@ export const useAuthStore = defineStore('auth', () => {
     statusLoaded,
     ensureStatus,
     login,
+    applyLoggedIn,
     forceLogout,
     applyStatus,
   }

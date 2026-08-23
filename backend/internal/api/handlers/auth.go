@@ -97,6 +97,43 @@ func (h *AuthHandler) Status(c *gin.Context) {
 	})
 }
 
+// authBearerToken 从 Authorization header 提取 Bearer token（与 middleware.bearerToken 同一逻辑）。
+func authBearerToken(c *gin.Context) string {
+	const prefix = "Bearer "
+	h := c.GetHeader("Authorization")
+	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+		return strings.TrimSpace(h[len(prefix):])
+	}
+	return ""
+}
+
+// Refresh POST /api/v1/auth/refresh
+//
+// 用现有主 token 换发新主 token（TTL 重置 7 天，旧 token 立即吊销、一次性有效）。
+// 供前端「切换主机」时续期并探测 token 是否仍有效（token 存后端内存，
+// 服务重启即全部失效，本地时间预判不可靠，以本接口结果为准）：
+//   - 旧 token 有效 → 200 {token, tokenType, expiresIn, username}；
+//   - 旧 token 无效/过期 → 401 unauthorized（前端据此引导重新登录）；
+//   - 认证未启用 → 400 auth_disabled（正常前端不会调用，仅防御）。
+func (h *AuthHandler) Refresh(c *gin.Context) {
+	if !h.svc.Enabled() {
+		writeError(c, http.StatusBadRequest, "auth_disabled", "认证未启用，无需刷新")
+		return
+	}
+	newToken, expiresIn, username, err := h.svc.RefreshMain(authBearerToken(c))
+	if err != nil {
+		// 走到这里说明 token 在中间件校验后仍失效（并发刷新等竞态），按未登录处理
+		writeError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"token":     newToken,
+		"tokenType": "bearer",
+		"expiresIn": expiresIn,
+		"username":  username,
+	})
+}
+
 // UpdateCredentialsRequest 修改凭证请求体。
 type UpdateCredentialsRequest struct {
 	Username string `json:"username"`

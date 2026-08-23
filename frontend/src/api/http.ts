@@ -1,5 +1,6 @@
 import { apiUrl } from '@/config/env'
 import { clearAuthToken, readAuthToken } from '@/utils/authStorage'
+import { readHostToken } from '@/utils/hostStorage'
 import { ApiError, type HttpMethod, type RequestOptions } from './types'
 
 /**
@@ -59,30 +60,48 @@ async function parseError(res: Response): Promise<ApiError> {
 
 /**
  * 认证免跳转路径：这些端点的 401 属于正常业务返回（登录失败 / 状态查询），
- * 不应触发「清 token 跳登录」的全局拦截。
+ * 不应触发「清 token + 打开重认证弹窗」的全局拦截。
+ * 注意：/auth/refresh 的 401 表示旧 token 已失效，由「切换主机」流程自身
+ * catch 并引导重新认证，这里同样不参与全局拦截（避免弹窗双重触发）。
  */
-const AUTH_FREE_PATHS = ['/api/v1/auth/login', '/api/v1/auth/status']
+const AUTH_FREE_PATHS = [
+  '/api/v1/auth/login',
+  '/api/v1/auth/status',
+  '/api/v1/auth/captcha',
+  '/api/v1/auth/refresh',
+]
+
+/** 401 全局拦截回调（由入口注入，见 main.ts）：业务层打开当前主机的重认证弹窗 */
+type UnauthorizedHandler = () => void
+let unauthorizedHandler: UnauthorizedHandler | null = null
 
 /**
- * 401 全局拦截：清空本地 token 并整页跳转登录页（带回跳地址）。
- * 用 window.location 而非 vue-router：http.ts 在请求层，避免与 router 循环依赖；
- * 整页刷新也能让所有已挂载组件以干净状态重建。
+ * 注册/清除 401 全局拦截回调。
+ * 请求层不 import 任何 store（避免 api → store 的依赖倒置与模块循环），
+ * 由应用入口（main.ts）注入真实实现——那里 import store 无循环、解析直接。
  */
-function handleUnauthorized(): void {
-  clearAuthToken()
-  // 动态 import 打破与 stores/auth（auth store → api → http）的静态循环依赖
-  void import('@/stores/auth').then(({ useAuthStore }) => {
-    useAuthStore().forceLogout()
-  })
-  if (window.location.pathname.startsWith('/login')) {
-    return // 已在登录页：仅清 token，不重复跳转
-  }
-  const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-  window.location.assign(`/login?redirect=${redirect}`)
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler
 }
 
 /**
- * 底层请求：自动拼接 `VITE_API_BASE_URL` + 路径。
+ * 401 全局拦截：清除「当前主机」的登录 token，并触发重认证回调。
+ *
+ * 多主机改造前是「清 token + 整页跳 /login」；改造后登录态按主机隔离，
+ * 一台主机的 token 失效不应把整个应用踢去登录页——清除当前主机 token 后
+ * 由注入的处理器弹窗让用户重新认证（对当前主机），其余主机不受影响。
+ *
+ * 结构性约束：带 baseUrl 覆盖的请求（目标主机探测/登录/刷新）都在
+ * AUTH_FREE_PATHS 内，401 不会走到这里（由 hosts store 的切换流程自行处理）；
+ * 若将来新增带 baseUrl 的业务请求，其 401 语义需在此一并设计（清谁、弹谁）。
+ */
+function handleUnauthorized(): void {
+  clearAuthToken()
+  unauthorizedHandler?.()
+}
+
+/**
+ * 底层请求：自动拼接「当前主机」地址 + 路径。
  *
  * @param path 仅写后端路径即可，例如 `/api/v1/agents`（可省略前导 `/`）
  *
@@ -90,6 +109,8 @@ function handleUnauthorized(): void {
  * ```ts
  * const data = await request<{ agents: Agent[] }>('GET', '/api/v1/agents')
  * await request('POST', '/api/v1/sessions', { body: { agentId: 'reasonix' } })
+ * // 按目标主机请求（不改变当前主机）：
+ * await request('GET', '/api/v1/auth/status', { baseUrl: 'http://other:8680' })
  * ```
  */
 export async function request<T = unknown>(
@@ -97,9 +118,9 @@ export async function request<T = unknown>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { query, body, headers = {}, signal, json = true } = options
+  const { query, body, headers = {}, signal, json = true, baseUrl } = options
 
-  const url = apiUrl(path) + buildQuery(query)
+  const url = apiUrl(path, baseUrl) + buildQuery(query)
 
   const init: RequestInit = {
     method,
@@ -107,8 +128,9 @@ export async function request<T = unknown>(
     headers: { ...headers },
   }
 
-  // 登录 token：存在则统一带 Authorization Bearer（认证未启用时后端直接忽略）
-  const token = readAuthToken()
+  // 登录 token：存在则统一带 Authorization Bearer（认证未启用时后端直接忽略）。
+  // baseUrl 覆盖时用目标主机的 token（如切换前对目标主机刷新/登录），否则用当前主机。
+  const token = baseUrl ? readHostToken(baseUrl) : readAuthToken()
   if (token) {
     ;(init.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`
   }
@@ -146,7 +168,7 @@ export async function request<T = unknown>(
   }
 
   if (!res.ok) {
-    // 认证失败：清 token 并跳登录（登录/状态接口除外）
+    // 认证失败：清当前主机 token 并打开重认证弹窗（登录/状态/刷新等接口除外）
     if (res.status === 401 && !AUTH_FREE_PATHS.some((p) => path.startsWith(p))) {
       handleUnauthorized()
     }

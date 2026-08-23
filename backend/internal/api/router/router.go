@@ -69,6 +69,8 @@ func New(
 		{
 			// 账号认证：修改用户名/密码（写回 config.toml，热生效）
 			authed.PUT("/auth/credentials", authHandler.UpdateCredentials)
+			// 主 token 刷新（切换主机时续期 + 探测有效性；旧 token 一次性有效）
+			authed.POST("/auth/refresh", authHandler.Refresh)
 
 			// Agent 管理
 			authed.GET("/agents", chatHandler.ListAgents)

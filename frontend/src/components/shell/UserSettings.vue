@@ -2,9 +2,9 @@
 import { computed, ref } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import { updateCredentials } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useHostsStore } from '@/stores/hosts'
 
 /**
  * 用户设置：单用户登录保护的用户名/密码管理。
@@ -18,7 +18,6 @@ import { useAuthStore } from '@/stores/auth'
 const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
-const router = useRouter()
 const authStore = useAuthStore()
 
 const username = ref(authStore.username)
@@ -39,7 +38,9 @@ async function doSave() {
     authStore.forceLogout() // 后端已吊销全部 token，本地也必须失效
     if (status.enabled) {
       message.success(t('settings.user.reLogin'))
-      await router.replace({ name: 'login', query: { redirect: '/' } })
+      // 凭证已变更且后端吊销全部 token：打开当前主机的重认证弹窗
+      // （多主机下不再整页跳 /login，仅当前主机的登录态受影响）
+      useHostsStore().requestCurrentHostAuth()
     } else {
       message.success(t('settings.user.disabledNow'))
       // 保留输入框但清空密码，避免残留明文

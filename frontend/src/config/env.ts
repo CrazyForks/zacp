@@ -6,47 +6,39 @@
  * - 仅 `VITE_*` 会打进客户端包
  */
 
-/** 去掉尾部 `/`，空串保持为空 */
-function normalizeBaseUrl(raw: string | undefined): string {
-  const value = (raw ?? '').trim()
-  if (!value) {
-    return ''
-  }
-  return value.replace(/\/+$/, '')
-}
-
-/** 后端 HTTP 基础 URL；空表示同源（相对路径 `/api/...`） */
-export const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL)
+import { currentHostUrl, normalizeHostUrl } from '@/utils/hostStorage'
 
 /**
- * 拼接 API 路径。
+ * 后端 HTTP 基础 URL；空表示同源（相对路径 `/api/...`）。
+ * 多主机场景下仅用于生成内置「本地主机」的地址（见 utils/hostStorage），
+ * 实际请求地址一律取自「当前主机」。
+ */
+export const apiBaseUrl = normalizeHostUrl(import.meta.env.VITE_API_BASE_URL ?? '')
+
+/**
+ * 拼接 API 路径：请求「当前主机」的地址（运行时可变）。
  * @param path 以 `/` 开头的路径，如 `/api/v1/agents`
+ * @param base 可选：覆盖当前主机（添加主机校验 / 切换前认证等场景按目标主机请求）
  */
-export function apiUrl(path: string): string {
+export function apiUrl(path: string, base?: string): string {
   const p = path.startsWith('/') ? path : `/${path}`
-  return apiBaseUrl ? `${apiBaseUrl}${p}` : p
+  const origin = base ?? currentHostUrl()
+  return `${origin}${p}`
 }
 
 /**
- * WebSocket 基础 URL（与 HTTP 同源策略一致）。
- * - 配置了 `VITE_API_BASE_URL`：http→ws / https→wss
- * - 未配置：使用当前页面 host，协议随页面 http/https 切换
+ * WebSocket 基础 URL：与「当前主机」HTTP 地址同源（http→ws / https→wss）。
  */
-export function wsBaseUrl(): string {
-  if (apiBaseUrl) {
-    return apiBaseUrl.replace(/^http/i, 'ws')
-  }
-  if (typeof window === 'undefined') {
-    return ''
-  }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}`
+export function wsBaseUrl(base?: string): string {
+  const host = base ?? currentHostUrl()
+  return host.replace(/^http/i, 'ws')
 }
 
 /**
  * 拼接 WebSocket 路径，如 `/api/v1/ws`
+ * @param base 可选：覆盖当前主机（与 apiUrl 的 base 语义一致）
  */
-export function wsUrl(path: string): string {
+export function wsUrl(path: string, base?: string): string {
   const p = path.startsWith('/') ? path : `/${path}`
-  return `${wsBaseUrl()}${p}`
+  return `${wsBaseUrl(base)}${p}`
 }

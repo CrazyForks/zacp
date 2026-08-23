@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { darkTheme } from 'naive-ui'
+import AuthModal from '@/components/shell/AuthModal.vue'
 import { darkThemeOverrides, themeOverrides } from '@/config/theme'
 import { useAppStore } from '@/stores/app'
 
@@ -21,6 +22,8 @@ const appStore = useAppStore()
       <n-dialog-provider>
         <n-notification-provider>
           <router-view />
+          <!-- 全局重认证弹窗（路由无关，401 / WS 握手失败 / 切换主机认证共用） -->
+          <AuthModal />
         </n-notification-provider>
       </n-dialog-provider>
     </n-message-provider>

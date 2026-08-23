@@ -152,6 +152,49 @@ func (s *TokenStore) ValidateResource(token, workspace, path string) bool {
 	return e.kind == TokenKindResource && e.workspace == workspace && e.path == path
 }
 
+// RefreshMain 校验旧主 token；有效则吊销旧 token 并签发新主 token（TTL 重置 7 天）。
+// 成功返回持有者 username 与新 token；旧 token 不存在/过期/类型不符返回 ok=false（并懒清理）。
+// 刷新语义：旧 token 一次性有效——刷新成功后立即失效，双 Tab 并发刷新时后到者 401，
+// 由前端重新登录兜底（单用户场景可接受）。
+func (s *TokenStore) RefreshMain(old string) (username, newToken string, ok bool) {
+	s.mu.Lock()
+	e, exists := s.entries[old]
+	if !exists || time.Now().After(e.expiresAt) {
+		delete(s.entries, old) // 懒清理过期项
+		s.mu.Unlock()
+		return "", "", false
+	}
+	if e.kind != TokenKindMain {
+		s.mu.Unlock()
+		return "", "", false
+	}
+	// 吊销旧 token + 签发新 token（锁内一次完成，避免两次加锁间被并发刷新钻空子）
+	delete(s.entries, old)
+	token := newTokenValue()
+	// 与 issue 相同的接近上限清理（条目数极少，仅防御性保持有界）
+	if len(s.entries) >= tokenMaxEntries {
+		now := time.Now()
+		for k, ent := range s.entries {
+			if now.After(ent.expiresAt) {
+				delete(s.entries, k)
+			}
+		}
+		if len(s.entries) >= tokenMaxEntries {
+			for k := range s.entries {
+				delete(s.entries, k)
+				break
+			}
+		}
+	}
+	s.entries[token] = &tokenEntry{
+		kind:      TokenKindMain,
+		username:  e.username,
+		expiresAt: time.Now().Add(MainTokenTTL),
+	}
+	s.mu.Unlock()
+	return e.username, token, true
+}
+
 // RevokeAll 吊销全部 token（凭证变更时调用，使现有登录态全部失效）。
 func (s *TokenStore) RevokeAll() {
 	s.mu.Lock()

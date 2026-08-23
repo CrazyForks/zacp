@@ -657,14 +657,22 @@ export interface LoginResult {
   username: string
 }
 
+/** 请求目标主机覆盖（认证探测/登录/刷新等按目标主机发起，不改变当前主机） */
+export interface HostTarget {
+  /** 目标主机地址（http(s)://host[:port]），缺省 = 当前主机 */
+  baseUrl?: string
+}
+
 export async function login(
   username: string,
   password: string,
   captchaId?: string,
   captcha?: string,
+  target: HostTarget = {},
 ): Promise<LoginResult> {
   return http.post<LoginResult>('/api/v1/auth/login', {
     body: { username, password, captchaId, captcha },
+    baseUrl: target.baseUrl,
   })
 }
 
@@ -674,8 +682,8 @@ export interface CaptchaResult {
   image: string
 }
 
-export async function fetchCaptcha(): Promise<CaptchaResult> {
-  return http.get<CaptchaResult>('/api/v1/auth/captcha')
+export async function fetchCaptcha(target: HostTarget = {}): Promise<CaptchaResult> {
+  return http.get<CaptchaResult>('/api/v1/auth/captcha', { baseUrl: target.baseUrl })
 }
 
 /** GET /api/v1/auth/status — 认证启用状态（免认证；前端守卫据此决定是否拦截） */
@@ -683,8 +691,20 @@ export interface AuthStatus {
   enabled: boolean
 }
 
-export async function fetchAuthStatus(): Promise<AuthStatus> {
-  return http.get<AuthStatus>('/api/v1/auth/status')
+export async function fetchAuthStatus(target: HostTarget = {}): Promise<AuthStatus> {
+  return http.get<AuthStatus>('/api/v1/auth/status', { baseUrl: target.baseUrl })
+}
+
+/**
+ * POST /api/v1/auth/refresh — 刷新主 token（切换主机时续期 + 探测有效性）。
+ *
+ * 语义：
+ * - 旧 token 有效 → 换发新 token（TTL 重置 7 天，旧 token 立即吊销）；
+ * - 旧 token 无效/过期 → 401 unauthorized（调用方据此引导重新登录）；
+ * - 认证未启用 → 400 auth_disabled（正常不会调用）。
+ */
+export async function refreshToken(target: HostTarget = {}): Promise<LoginResult> {
+  return http.post<LoginResult>('/api/v1/auth/refresh', { baseUrl: target.baseUrl })
 }
 
 /** PUT /api/v1/auth/credentials — 修改用户名/密码；password 为空 = 关闭登录保护 */

@@ -1,6 +1,8 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { registerSW } from 'virtual:pwa-register'
+import { setUnauthorizedHandler } from '@/api/http'
+import { useHostsStore } from '@/stores/hosts'
 import App from './App.vue'
 import router from './router'
 import { setupI18n } from './locales'
@@ -19,6 +21,12 @@ document.documentElement.lang = resolveInitialLocale()
 app.use(pinia)
 app.use(router)
 app.use(i18n)
+
+// 401 全局拦截 → 打开「当前主机」的重认证弹窗。
+// 请求层不 import store（避免依赖倒置与模块循环），这里从入口注入真实实现；
+// 处理器在用户交互时才被调用，此时 pinia 必已安装。
+setUnauthorizedHandler(() => useHostsStore().requestCurrentHostAuth())
+
 app.mount('#app')
 
 // 注册 Service Worker（PWA）：
